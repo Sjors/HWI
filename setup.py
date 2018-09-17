@@ -20,6 +20,8 @@ setuptools.setup(
         'keepkey', # KeepKey
         'ckcc-protocol', # Coldcard
         'bip32utils',
+        'werkzeug', # Server for RPC
+        'json-rpc'
     ],
     python_requires='>=3',
     classifiers=[
