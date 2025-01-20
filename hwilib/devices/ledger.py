@@ -216,16 +216,12 @@ class LedgerClient(HardwareWalletClient):
         if isinstance(self.client, LegacyClient):
             return legacy_sign_tx()
 
-        # Make a deepcopy of this psbt. We will need to modify it to get signing to work,
-        # which will affect the caller's detection for whether signing occured.
-        psbt2 = copy.deepcopy(tx)
-        if tx.version != 2:
-            psbt2.convert_to_v2()
+        assert(tx.version == 2)
 
         # Figure out which wallets are signing
         wallets: Dict[bytes, Tuple[int, AddressType, WalletPolicy, Optional[bytes]]] = {}
         pubkeys: Dict[int, bytes] = {}
-        for input_num, psbt_in in builtins.enumerate(psbt2.inputs):
+        for input_num, psbt_in in builtins.enumerate(tx.inputs):
             utxo = None
             scriptcode = b""
             if psbt_in.witness_utxo:
@@ -284,7 +280,7 @@ class LedgerClient(HardwareWalletClient):
                         if pk_origin.fingerprint == master_fp:
                             our_keys += 1
                             pubkeys[input_num] = pub
-                        for xpub_bytes, xpub_origin in psbt2.xpub.items():
+                        for xpub_bytes, xpub_origin in tx.xpub.items():
                             xpub = ExtendedKey.from_bytes(xpub_bytes)
                             if (xpub_origin.fingerprint == pk_origin.fingerprint) and (xpub_origin.path == pk_origin.path[:len(xpub_origin.path)]):
                                 key_exprs.append(PubkeyProvider(xpub_origin, xpub.to_string(), None).to_string(hardened_char="'"))
@@ -336,7 +332,7 @@ class LedgerClient(HardwareWalletClient):
         for _, (_, addrtype, wallet, wallet_hmac) in sorted(wallets.items(), key=lambda y: y[1][0]):
             if addrtype == AddressType.LEGACY:
                 # We need to remove witness_utxo for legacy inputs when signing with legacy otherwise signing will fail
-                for psbt_in in psbt2.inputs:
+                for psbt_in in tx.inputs:
                     utxo = None
                     if psbt_in.witness_utxo:
                         utxo = psbt_in.witness_utxo
@@ -346,10 +342,10 @@ class LedgerClient(HardwareWalletClient):
                     if not is_wit:
                         psbt_in.witness_utxo = None
 
-            input_sigs = self.client.sign_psbt(psbt2, wallet, wallet_hmac)
+            input_sigs = self.client.sign_psbt(tx, wallet, wallet_hmac)
 
             for idx, pubkey, sig in input_sigs:
-                psbt_in = psbt2.inputs[idx]
+                psbt_in = tx.inputs[idx]
 
                 utxo = None
                 if psbt_in.witness_utxo:
@@ -367,13 +363,6 @@ class LedgerClient(HardwareWalletClient):
                     psbt_in.tap_key_sig = sig
                 else:
                     psbt_in.partial_sigs[pubkey] = sig
-
-        # Extract the sigs from psbt2 and put them into tx
-        for sig_in, psbt_in in zip(psbt2.inputs, tx.inputs):
-            psbt_in.partial_sigs.update(sig_in.partial_sigs)
-            psbt_in.tap_script_sigs.update(sig_in.tap_script_sigs)
-            if len(sig_in.tap_key_sig) != 0 and len(psbt_in.tap_key_sig) == 0:
-                psbt_in.tap_key_sig = sig_in.tap_key_sig
 
         return tx
 

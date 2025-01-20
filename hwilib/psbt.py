@@ -843,8 +843,6 @@ class PSBT(object):
                 raise PSBTSerializationError("PSBT_GLOBAL_UNSIGNED_TX is not allowed in PSBTv2")
 
         # Read input data
-        if input_count is None:
-            input_count = len(self.tx.vin)
         for i in range(input_count):
             if f.tell() == end:
                 break
@@ -854,8 +852,6 @@ class PSBT(object):
 
             if self.version >= 2:
                 prev_txid = psbt_in.prev_txid
-            else:
-                prev_txid = ser_uint256(self.tx.vin[i].prevout.hash)
 
             if psbt_in.non_witness_utxo:
                 psbt_in.non_witness_utxo.rehash()
@@ -866,8 +862,6 @@ class PSBT(object):
             raise PSBTSerializationError("Inputs provided does not match the number of inputs in transaction")
 
         # Read output data
-        if output_count is None:
-            output_count = len(self.tx.vout)
         for i in range(output_count):
             if f.tell() == end:
                 break
@@ -877,8 +871,6 @@ class PSBT(object):
 
         if len(self.outputs) != output_count:
             raise PSBTSerializationError("Outputs provided does not match the number of outputs in transaction")
-
-        self.cache_unsigned_tx_pieces()
 
     def serialize(self) -> str:
         """
@@ -945,41 +937,6 @@ class PSBT(object):
         # return hex string
         return base64.b64encode(r).decode()
 
-    def cache_unsigned_tx_pieces(self) -> None:
-        """
-        If this PSBT is v0, then the global unsigned transaction will be used to fill in the PSBTv2
-        fields so that all users of the PSBT classes can use the same PSBTv2 interface regardless
-        of PSBT version.
-
-        Does nothing if the PSBT is already v2.
-        """
-        # To make things easier, we split up the global transaction
-        # and use the PSBTv2 fields for PSBTv0
-        if self.tx is not None:
-            self.setup_from_tx(self.tx)
-
-    def setup_from_tx(self, tx: CTransaction):
-        """
-        Fills in the PSBTv2 fields for this PSBT given a transaction
-
-        :param tx: The CTransaction to fill from
-        """
-        self.tx_version = tx.nVersion
-        self.fallback_locktime = tx.nLockTime
-
-        for i, txin in enumerate(tx.vin):
-            psbt_in = self.inputs[i]
-
-            psbt_in.prev_txid = ser_uint256(txin.prevout.hash)
-            psbt_in.prev_out = txin.prevout.n
-            psbt_in.sequence = txin.nSequence
-
-        for i, txout in enumerate(tx.vout):
-            psbt_out = self.outputs[i]
-
-            psbt_out.amount = txout.nValue
-            psbt_out.script = txout.scriptPubKey
-
     def compute_lock_time(self) -> int:
         """
         Computes the lock time for this transaction
@@ -1021,6 +978,7 @@ class PSBT(object):
         if not self.tx.is_null():
             return self.tx
 
+        # PSBT_GLOBAL_TX_VERSION is mandatory for PSBTv2
         assert self.tx_version is not None
 
         tx = CTransaction()
