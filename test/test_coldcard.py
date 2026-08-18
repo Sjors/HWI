@@ -21,6 +21,7 @@ from test_device import (
     TestDisplayAddress,
     TestGetKeypool,
     TestGetDescriptors,
+    TestMuSig2,
     TestMuSig2Display,
     TestMuSig2MiniscriptDisplay,
     TestRegisterDescriptor,
@@ -219,6 +220,8 @@ def coldcard_test_suite(simulator, bitcoind, interface, is_edge=False):
     if is_edge:
         suite.addTest(DeviceTestCase.parameterize(TestColdcardEdgeDisplayAddress, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestTaprootMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
+        if dev_emulator.supports_musig2 and dev_emulator.supports_taproot_miniscript:
+            suite.addTest(DeviceTestCase.parameterize(TestMuSig2, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestMuSig2Display, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestMuSig2MiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
 
