@@ -32,6 +32,7 @@ from copy import deepcopy
 from enum import Enum
 from io import BufferedReader, BytesIO
 from typing import (
+    Dict,
     List,
     Optional,
     Tuple,
@@ -146,7 +147,8 @@ class PubkeyProvider(object):
         :param origin: The key origin if one is available
         :param pubkey: The public key. Either a hex string or a serialized extended pubkey
         :param deriv_path: Additional derivation path if the pubkey is an extended pubkey
-        :param expr_index: The position of this key within the descriptor
+        :param expr_index: The index of this key in the BIP 388 Key information vector.
+            A key that appears multiple times in a descriptor uses the same index everywhere.
         """
         self.origin = origin
         self.pubkey = pubkey
@@ -357,23 +359,39 @@ class Descriptor(object):
         )
 
     def get_pubkey_providers(self) -> list['PubkeyProvider']:
-        """
-        Get the strings of all pubkey expressions contained in this descriptor,
-        in the same order that they appear in the descriptor string. These can be used with
-        :func:`get_bip388_template` to get a full BIP 388 Wallet Policy for this descriptor.
+        r"""
+        Get the individual pubkey expressions contained in this descriptor, in the order in
+        which they first appear in the descriptor string. A key that appears more than once
+        is returned only once, matching the BIP 388 Key information vector, so these can be
+        used with :func:`get_bip388_template` to get a full BIP 388 Wallet Policy for this
+        descriptor.
 
-        :return: List of pubkey expression strings
+        :return: List of :class:`PubkeyProvider`\ s
         """
-        out = [p for p in self.pubkeys]
-        for s in self.subdescriptors:
-            out.extend(s.get_pubkey_providers())
+        out: Dict[str, 'PubkeyProvider'] = {}
+        for pubkey in self.get_derivation_providers():
+            out.setdefault(pubkey.get_bip388_key_info(), pubkey)
+        return list(out.values())
+
+    def get_derivation_providers(self) -> list['PubkeyProvider']:
+        r"""
+        Get the key expressions contained in this descriptor whose derivation path suffixes
+        belong to the descriptor, in the same order that they appear in the descriptor
+        string. Unlike :func:`get_pubkey_providers`, a key that appears more than once is
+        returned once for each appearance.
+
+        :return: List of :class:`PubkeyProvider`\ s
+        """
+        out = list(self.pubkeys)
+        for subdescriptor in self.subdescriptors:
+            out.extend(subdescriptor.get_derivation_providers())
         return out
 
     def derive(self, pos: int, multipath_index: int = 0) -> 'Descriptor':
         """Select a multipath entry and address index from a ranged descriptor."""
 
         descriptor = deepcopy(self)
-        for pubkey in descriptor.get_pubkey_providers():
+        for pubkey in descriptor.get_derivation_providers():
             path = pubkey.get_deriv_path(pos, multipath_index)
             pubkey.deriv_path = [[step] for step in path] or None
             pubkey.ranged = False
@@ -785,7 +803,14 @@ def parse_descriptor(desc: str) -> 'Descriptor':
         computed = DescriptorChecksum(desc)
         if computed != checksum:
             raise ValueError("The checksum does not match; Got {}, expected {}".format(checksum, computed))
-    return _parse_descriptor(desc, _ParseDescriptorContext.TOP, 0)[0]
+    descriptor = _parse_descriptor(desc, _ParseDescriptorContext.TOP, 0)[0]
+
+    # A key that appears more than once must use a single index in the
+    # BIP 388 Key information vector.
+    indexes: Dict[str, int] = {}
+    for pubkey in descriptor.get_derivation_providers():
+        pubkey.expr_index = indexes.setdefault(pubkey.get_bip388_key_info(), len(indexes))
+    return descriptor
 
 class RegisteredDescriptor:
     """

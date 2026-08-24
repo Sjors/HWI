@@ -174,6 +174,19 @@ class TestDescriptor(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Trailing comma"):
             parse_descriptor(f"wsh(multi(1,{xpub}/0/*,))")
 
+    def test_bip388_key_deduplication(self):
+        key = "[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw"
+        other = "[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7"
+        descriptor = parse_descriptor(f"wsh(multi(2,{key}/<0;1>/*,{other}/<0;1>/*,{key}/<2;3>/*))")
+        self.assertEqual(
+            descriptor.get_bip388_template(),
+            "wsh(multi(2,@0/<0;1>/*,@1/<0;1>/*,@0/<2;3>/*))",
+        )
+        self.assertEqual(
+            [provider.get_bip388_key_info() for provider in descriptor.get_pubkey_providers()],
+            [key, other],
+        )
+
     def test_parse_descriptor_replace_h(self):
         d = "wpkh([00000001/84h/1h/0h]tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B/0/0)"
         desc = parse_descriptor(d)
@@ -224,10 +237,11 @@ class TestDescriptor(unittest.TestCase):
         self.assertEqual(desc.pubkeys[0].pubkey, "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B")
         self.assertEqual(desc.pubkeys[0].deriv_path, [[0], [0]])
         self.assertEqual(desc.pubkeys[0].expr_index, 0)
+        # The same key is used in all four leaves, so it shares one BIP 388 key index
         self.assertEqual(desc.subdescriptors[0].pubkeys[0].expr_index, 1)
-        self.assertEqual(desc.subdescriptors[1].pubkeys[0].expr_index, 2)
-        self.assertEqual(desc.subdescriptors[2].pubkeys[0].expr_index, 3)
-        self.assertEqual(desc.subdescriptors[3].pubkeys[0].expr_index, 4)
+        self.assertEqual(desc.subdescriptors[1].pubkeys[0].expr_index, 1)
+        self.assertEqual(desc.subdescriptors[2].pubkeys[0].expr_index, 1)
+        self.assertEqual(desc.subdescriptors[3].pubkeys[0].expr_index, 1)
         self.assertEqual(desc.depths, [1, 3, 3, 2])
         self.assertEqual(desc.to_string_no_checksum(), d)
 
