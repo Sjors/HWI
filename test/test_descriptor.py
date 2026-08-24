@@ -1,6 +1,7 @@
 #! /usr/bin/env python3
 
 from hwilib.descriptor import (
+    MiniscriptDescriptor,
     parse_descriptor,
     MultisigDescriptor,
     SHDescriptor,
@@ -15,6 +16,61 @@ from hwilib.errors import InvalidPolicyError
 import unittest
 
 class TestDescriptor(unittest.TestCase):
+    def test_segwit_miniscript_policy(self):
+        key_0 = "[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw"
+        key_1 = "[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7"
+        multipath = "<0;1>/*"
+        descriptor = (
+            f"wsh(and_v(v:pk({key_0}/{multipath}),"
+            f"or_d(pk({key_1}/{multipath}),older(12960))))"
+        )
+        parsed = parse_descriptor(descriptor)
+        self.assertIsInstance(parsed, WSHDescriptor)
+        self.assertIsInstance(parsed.subdescriptors[0], MiniscriptDescriptor)
+        self.assertEqual(parsed.to_string_no_checksum(hardened_char="'"), descriptor)
+        self.assertEqual(
+            parsed.get_bip388_template(),
+            "wsh(and_v(v:pk(@0/<0;1>/*),or_d(pk(@1/<0;1>/*),older(12960))))",
+        )
+        self.assertEqual(
+            [provider.get_bip388_key_info() for provider in parsed.get_pubkey_providers()],
+            [key_0, key_1],
+        )
+
+    def test_invalid_segwit_miniscript(self):
+        key = "[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw"
+        multipath = "<0;1>/*"
+        with self.assertRaisesRegex(ValueError, "Unknown Miniscript fragment: unknown"):
+            parse_descriptor(f"wsh(unknown({key}/{multipath}))")
+        with self.assertRaisesRegex(ValueError, "Unknown Miniscript fragment: Pk"):
+            parse_descriptor(f"wsh(Pk({key}/{multipath}))")
+        with self.assertRaisesRegex(ValueError, "Unknown Miniscript wrapper: x"):
+            parse_descriptor(f"wsh(x:pk({key}/{multipath}))")
+        with self.assertRaisesRegex(ValueError, "Invalid Miniscript expression"):
+            parse_descriptor(f"wsh(and_v(v:pk({key}/{multipath}),older(1)")
+        with self.assertRaisesRegex(ValueError, "takes exactly one number"):
+            parse_descriptor("wsh(older(1,2))")
+        with self.assertRaisesRegex(ValueError, "argument must be a number"):
+            parse_descriptor("wsh(older(-1))")
+        with self.assertRaisesRegex(ValueError, "character hex string"):
+            parse_descriptor("wsh(sha256(abcd))")
+        with self.assertRaisesRegex(ValueError, "threshold must be between"):
+            parse_descriptor(f"wsh(and_v(v:pk({key}/{multipath}),multi(2,{key}/{multipath})))")
+        with self.assertRaisesRegex(ValueError, "Unknown Miniscript fragment: multi_a"):
+            parse_descriptor(f"wsh(and_v(v:pk({key}/{multipath}),multi_a(1,{key}/{multipath})))")
+        with self.assertRaisesRegex(ValueError, "Empty argument"):
+            parse_descriptor("wsh(and_v(,older(1)))")
+
+        # A non-ranged key parses, but is not a valid BIP 388 policy.
+        non_ranged = parse_descriptor(f"wsh(and_v(v:pk({key}),older(1)))")
+        with self.assertRaisesRegex(InvalidPolicyError, "ranged"):
+            non_ranged.get_bip388_template()
+
+        # Segwit v0 limits multi() to 20 keys.
+        keys = ",".join([f"{key}/{multipath}"] * 21)
+        with self.assertRaisesRegex(ValueError, "at most 20 keys"):
+            parse_descriptor(f"wsh(and_v(v:pk({key}/{multipath}),multi(1,{keys})))")
+
     def test_derive(self):
         xpub = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
         descriptor_str = "wsh(multi(1,{0}/<0;1;2>/*,{0}/<10;11;12>/*))".format(xpub)
