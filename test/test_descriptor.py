@@ -165,6 +165,15 @@ class TestDescriptor(unittest.TestCase):
     def test_parse_empty_descriptor(self):
         self.assertRaises(ValueError, parse_descriptor, "")
 
+    def test_parse_invalid_key_expressions(self):
+        xpub = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
+        with self.assertRaisesRegex(ValueError, "Invalid ranged derivation path"):
+            parse_descriptor(f"wpkh({xpub}/0*)")
+        with self.assertRaisesRegex(ValueError, "Empty key expression"):
+            parse_descriptor(f"wsh(multi(1,{xpub}/0/*,,{xpub}/1/*))")
+        with self.assertRaisesRegex(ValueError, "Trailing comma"):
+            parse_descriptor(f"wsh(multi(1,{xpub}/0/*,))")
+
     def test_parse_descriptor_replace_h(self):
         d = "wpkh([00000001/84h/1h/0h]tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B/0/0)"
         desc = parse_descriptor(d)

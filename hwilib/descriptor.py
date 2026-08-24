@@ -106,6 +106,28 @@ def AddChecksum(desc: str) -> str:
     return desc + "#" + DescriptorChecksum(desc)
 
 
+def _parse_ranged_deriv_path(path_str: str) -> Tuple[Optional[List[List[int]]], bool]:
+    """
+    :meta private:
+
+    Parse a derivation path suffix that may end with a ``/*`` range marker.
+
+    :param path_str: The derivation path, without the leading ``/`` that separates it from the key
+    :return: The multipath derivation path, or ``None`` if there is none, and whether the path is ranged
+    :raises: ValueError: if the derivation path is malformed
+    """
+    ranged = path_str.endswith("*")
+    if ranged:
+        if path_str == "*":
+            path_str = ""
+        elif path_str.endswith("/*"):
+            path_str = path_str[:-2]
+        else:
+            raise ValueError(f"Invalid ranged derivation path: /{path_str}")
+    deriv_path = parse_multipath(path_str) if path_str else None
+    return deriv_path, ranged
+
+
 class PubkeyProvider(object):
     """
     A public key expression in a descriptor.
@@ -155,6 +177,8 @@ class PubkeyProvider(object):
         deriv_path = None
         ranged = False
 
+        if not s:
+            raise ValueError("Empty key expression")
         if s[0] == "[":
             end = s.index("]")
             origin = KeyOriginInfo.from_string(s[1:end])
@@ -164,12 +188,7 @@ class PubkeyProvider(object):
         slash_idx = s.find("/")
         if slash_idx != -1:
             pubkey = s[:slash_idx]
-            path_str = s[slash_idx + 1:]
-            ranged = path_str.endswith("*")
-            if ranged:
-                path_str = path_str[:-2]
-            if len(path_str) > 0:
-                deriv_path = parse_multipath(path_str)
+            deriv_path, ranged = _parse_ranged_deriv_path(s[slash_idx + 1:])
 
         return cls(origin, pubkey, deriv_path, key_expr_index, ranged)
 
@@ -558,6 +577,8 @@ def _get_const(s: str, const: str) -> str:
     :return: The remainder of the string without the constant character
     :raises: ValueError: if the first character is not the constant character
     """
+    if not s:
+        raise ValueError(f"Expected '{const}' but reached the end")
     if s[0] != const:
         raise ValueError(f"Expected '{const}' but got '{s[0]}'")
     return s[1:]
@@ -599,6 +620,8 @@ def parse_pubkey(expr: str, key_expr_index: int) -> Tuple['PubkeyProvider', str,
     if comma_idx != -1:
         end = comma_idx
         next_expr = expr[end + 1:]
+        if not next_expr:
+            raise ValueError("Trailing comma after key expression")
     return PubkeyProvider.parse(expr[:end], key_expr_index), next_expr, (key_expr_index + 1)
 
 
