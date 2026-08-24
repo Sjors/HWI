@@ -62,6 +62,7 @@ class TrezorEmulator(DeviceEmulator):
         self.supports_taproot = True
         self.supports_segwit_miniscript = False
         self.supports_taproot_miniscript = False
+        self.supports_musig2 = False
         self.strict_bip48 = True
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
