@@ -8,6 +8,7 @@ from hwilib.devices.ledger_bitcoin.client_base import (
     MusigPartialSignature,
     MusigPubNonce,
     PartialSignature,
+    UnknownSignPsbtYieldedObject,
 )
 from hwilib.devices.ledger_bitcoin.client_command import (
     CCMD_YIELD_MUSIG_PARTIALSIGNATURE_TAG,
@@ -71,6 +72,19 @@ class TestLedgerBitcoinClient(unittest.TestCase):
                     partial_signature=partial_signature,
                 ),
             ),
+        )
+
+    def test_decode_unknown_yielded_object(self):
+        tag = 0x80000001
+        opaque_data = bytes.fromhex("deadbeef")
+        result = _decode_signpsbt_yielded_value(
+            ser_compact_size(tag)
+            + ser_compact_size(6)
+            + opaque_data
+        )
+        self.assertEqual(
+            result,
+            (6, UnknownSignPsbtYieldedObject(tag, opaque_data)),
         )
 
 

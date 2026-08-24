@@ -16,6 +16,7 @@ from .client_base import (
     PartialSignature,
     SignPsbtYieldedObject,
     TransportClient,
+    UnknownSignPsbtYieldedObject,
 )
 from .client_legacy import LegacyClient
 from .errors import UnknownDeviceError
@@ -98,6 +99,11 @@ def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObje
                 partial_signature=partial_signature
             )
         )
+    elif input_index_or_tag >= 0x80000000:
+        # This is certainly an unknown tag added by a future version of the app.
+        # The first element is the input index; the remaining data is opaque.
+        input_index = read_varint(res_buffer)
+        return input_index, UnknownSignPsbtYieldedObject(input_index_or_tag, res_buffer.read())
     else:
         # other values follow an encoding without an explicit tag, where the
         # first element is the input index. All the signature types are implemented

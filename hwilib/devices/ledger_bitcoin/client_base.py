@@ -100,7 +100,23 @@ class MusigPartialSignature:
     tapleaf_hash: Optional[bytes]
     partial_signature: bytes
 
-SignPsbtYieldedObject = Union[PartialSignature, MusigPubNonce, MusigPartialSignature]
+
+@dataclass(frozen=True)
+class UnknownSignPsbtYieldedObject:
+    """Represents an unknown object returned by sign_psbt, for forward compatibility.
+
+    It contains the tag and the opaque bytes returned by the device.
+    """
+    tag: int
+    data: bytes
+
+
+SignPsbtYieldedObject = Union[
+    PartialSignature,
+    MusigPubNonce,
+    MusigPartialSignature,
+    UnknownSignPsbtYieldedObject,
+]
 
 class Client:
     def __init__(self, transport_client: TransportClient, chain: Chain = Chain.MAIN) -> None:
