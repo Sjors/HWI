@@ -46,6 +46,7 @@ MAX_TAPROOT_NODES = 128
 
 _MINISCRIPT_WRAPPERS = set("acdjlnstuv")
 _MINISCRIPT_KEY_FRAGMENTS = {"pk", "pk_k", "pk_h", "pkh"}
+_MINISCRIPT_TAPSCRIPT_MULTI_FRAGMENTS = {"multi_a", "sortedmulti_a"}
 _MINISCRIPT_TIMELOCK_FRAGMENTS = {"older", "after"}
 _MINISCRIPT_HASH_FRAGMENTS = {"sha256": 64, "hash256": 64, "ripemd160": 40, "hash160": 40}
 _MINISCRIPT_BINARY_FRAGMENTS = {"and_v", "and_b", "and_n", "or_b", "or_c", "or_d", "or_i"}
@@ -735,10 +736,6 @@ class _ParseDescriptorContext(Enum):
     P2WSH = 3
     """Within a ``wsh()`` descriptor"""
 
-    P2TR = 4
-    """Within a ``tr()`` descriptor"""
-
-
 class _MiniscriptContext(Enum):
     """
     :meta private:
@@ -748,6 +745,9 @@ class _MiniscriptContext(Enum):
 
     SEGWIT_V0 = 1
     """A Segwit v0 witness script"""
+
+    TAPSCRIPT = 2
+    """A Taproot leaf script"""
 
 
 def _parse_miniscript_num(name: str, arg: str) -> int:
@@ -821,6 +821,20 @@ def _parse_miniscript(
         thresh = _parse_miniscript_num(name, arg_strs[0])
         if not 1 <= thresh <= len(arg_strs) - 1:
             raise ValueError("multi() threshold must be between 1 and the number of keys")
+        args.append(arg_strs[0])
+        for arg_str in arg_strs[1:]:
+            args.append(PubkeyProvider.parse(arg_str, key_expr_index))
+            key_expr_index += 1
+    elif name in _MINISCRIPT_TAPSCRIPT_MULTI_FRAGMENTS:
+        if ctx != _MiniscriptContext.TAPSCRIPT:
+            raise ValueError(f"{name}() is only allowed in tapscript Miniscript")
+        if len(arg_strs) < 2:
+            raise ValueError(f"{name}() takes a threshold and at least one key expression")
+        if len(arg_strs) - 1 > 999:
+            raise ValueError(f"{name}() supports at most 999 keys")
+        thresh = _parse_miniscript_num(name, arg_strs[0])
+        if not 1 <= thresh <= len(arg_strs) - 1:
+            raise ValueError(f"{name}() threshold must be between 1 and the number of keys")
         args.append(arg_strs[0])
         for arg_str in arg_strs[1:]:
             args.append(PubkeyProvider.parse(arg_str, key_expr_index))
@@ -949,7 +963,7 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
         key_expr_index += 1
         if internal_key.multipath_len > 1:
             multipath_len = internal_key.multipath_len
-        subscripts = []
+        subscripts: List[Descriptor] = []
         depths = []
         if expr:
             expr = _get_const(expr, ",")
@@ -969,8 +983,12 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
                         raise ValueError("tr() supports at most {MAX_TAPROOT_NODES} nesting levels")
                 # Process script expression
                 sarg, expr = _get_expr(expr)
-                subdesc, key_expr_index = _parse_descriptor(sarg, _ParseDescriptorContext.P2TR, key_expr_index)
-                for pub in subdesc.pubkeys:
+                subdesc, key_expr_index = _parse_miniscript(
+                    sarg,
+                    key_expr_index,
+                    _MiniscriptContext.TAPSCRIPT,
+                )
+                for pub in subdesc.get_derivation_providers():
                     if pub.multipath_len > 1:
                         if multipath_len is None:
                             multipath_len = pub.multipath_len
