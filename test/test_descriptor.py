@@ -423,6 +423,47 @@ class TestDescriptor(unittest.TestCase):
         with self.assertRaisesRegex(InvalidPolicyError, "follow musig"):
             parse_descriptor(f"tr(musig({xpub_a}/1,{xpub_b}/1)/<0;1>/*)").get_bip388_template()
 
+    def test_musig_tapscript_key(self):
+        key_0 = "[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw"
+        key_1 = "[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7"
+        internal_key = "[6738736c/86'/0'/0']xpub6CryUDWPS28eR2cDyojB8G354izmx294BdjeSvH469Ty3o2E6Tq5VjBJCn8rWBgesvTJnyXNAJ3QpLFGuNwqFXNt3gn612raffLWfdHNkYL"
+        descriptor = (
+            f"tr({internal_key}/<0;1>/*,"
+            f"and_v(v:pk(musig({key_0},{key_1})/<0;1>/*),older(12960)))"
+        )
+        parsed = parse_descriptor(descriptor)
+        self.assertEqual(parsed.to_string_no_checksum(hardened_char="'"), descriptor)
+        self.assertEqual(
+            parsed.get_bip388_template(),
+            "tr(@0/<0;1>/*,and_v(v:pk(musig(@1,@2)/<0;1>/*),older(12960)))",
+        )
+        self.assertEqual(
+            [provider.get_bip388_key_info() for provider in parsed.get_pubkey_providers()],
+            [internal_key, key_0, key_1],
+        )
+
+    def test_bip388_musig_tapscript_vector(self):
+        key_0 = "[6738736c/48'/0'/0'/100']xpub6FC1fXFP1GXQpyRFfSE1vzzySqs3Vg63bzimYLeqtNUYbzA87kMNTcuy9ubr7MmavGRjW2FRYHP4WGKjwutbf1ghgkUW9H7e3ceaPLRcVwa"
+        key_1 = "[b2b1f0cf/44'/0'/0'/100']xpub6EYajCJHe2CK53RLVXrN14uWoEttZgrRSaRztujsXg7yRhGtHmLBt9ot9Pd5ugfwWEu6eWyJYKSshyvZFKDXiNbBcoK42KRZbxwjRQpm5Js"
+        key_2 = "[a666a867/44'/0'/0'/100']xpub6Dgsze3ujLi1EiHoCtHFMS9VLS1UheVqxrHGfP7sBJ2DBfChEUHV4MDwmxAXR2ayeytpwm3zJEU3H3pjCR6q6U5sP2p2qzAD71x9z5QShK2"
+        descriptor = parse_descriptor(
+            f"tr(musig({key_0},{key_1},{key_2})/<0;1>/*,"
+            f"{{and_v(v:pk(musig({key_0},{key_1})/<0;1>/*),older(12960)),"
+            f"{{and_v(v:pk(musig({key_0},{key_2})/<0;1>/*),older(12960)),"
+            f"and_v(v:pk(musig({key_1},{key_2})/<0;1>/*),older(12960))}}}})"
+        )
+        self.assertEqual(
+            descriptor.get_bip388_template(),
+            "tr(musig(@0,@1,@2)/<0;1>/*,"
+            "{and_v(v:pk(musig(@0,@1)/<0;1>/*),older(12960)),"
+            "{and_v(v:pk(musig(@0,@2)/<0;1>/*),older(12960)),"
+            "and_v(v:pk(musig(@1,@2)/<0;1>/*),older(12960))}})",
+        )
+        self.assertEqual(
+            [provider.get_bip388_key_info() for provider in descriptor.get_pubkey_providers()],
+            [key_0, key_1, key_2],
+        )
+
     def test_parse_descriptor_replace_h(self):
         d = "wpkh([00000001/84h/1h/0h]tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B/0/0)"
         desc = parse_descriptor(d)

@@ -916,8 +916,10 @@ def _parse_miniscript(
     if name in _MINISCRIPT_KEY_FRAGMENTS:
         if len(arg_strs) != 1:
             raise ValueError(f"{name}() takes exactly one key expression")
-        args.append(PubkeyProvider.parse(arg_strs[0], key_expr_index))
-        key_expr_index += 1
+        if ctx != _MiniscriptContext.TAPSCRIPT and arg_strs[0].startswith("musig("):
+            raise ValueError("musig() is only allowed in tapscript Miniscript")
+        key, key_expr_index = _parse_key_expr(arg_strs[0], key_expr_index)
+        args.append(key)
     elif name == "multi":
         if ctx != _MiniscriptContext.SEGWIT_V0:
             raise ValueError("multi() is only allowed in Segwit v0 Miniscript")
@@ -944,8 +946,8 @@ def _parse_miniscript(
             raise ValueError(f"{name}() threshold must be between 1 and the number of keys")
         args.append(arg_strs[0])
         for arg_str in arg_strs[1:]:
-            args.append(PubkeyProvider.parse(arg_str, key_expr_index))
-            key_expr_index += 1
+            key, key_expr_index = _parse_key_expr(arg_str, key_expr_index)
+            args.append(key)
     elif name in _MINISCRIPT_TIMELOCK_FRAGMENTS:
         if len(arg_strs) != 1:
             raise ValueError(f"{name}() takes exactly one number")
