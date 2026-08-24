@@ -34,6 +34,7 @@ class DeviceEmulator():
         self.supports_unsorted_ms = None
         self.supports_taproot = None
         self.supports_segwit_miniscript = None
+        self.supports_taproot_miniscript = None
         self.strict_bip48 = None
         self.include_xpubs = None
         self.supports_device_multiple_multisig = None
@@ -51,6 +52,7 @@ class DeviceEmulator():
         assert self.supports_xpub_ms_display is not None
         assert self.supports_unsorted_ms is not None
         assert self.supports_segwit_miniscript is not None
+        assert self.supports_taproot_miniscript is not None
         assert self.strict_bip48 is not None
         assert self.include_xpubs is not None
         assert self.supports_device_multiple_multisig is not None
@@ -1025,4 +1027,22 @@ class TestSegwitMiniscriptDisplay(PolicyDisplayTestCase):
             f"Mini{self.emulator.fingerprint}",
             descriptor,
             "wsh(and_v(v:pk(@0/<0;1>/*),older(12960)))",
+        )
+
+class TestTaprootMiniscriptDisplay(PolicyDisplayTestCase):
+    def setUp(self):
+        if not self.emulator.supports_taproot_miniscript:
+            self.skipTest("device does not support tapscript Miniscript policies")
+        super().setUp()
+
+    def test_taproot_miniscript(self):
+        device_key = self._get_account_key("m/86h/1h/0h")
+        descriptor = (
+            f"tr({device_key}/<0;1>/*,"
+            f"and_v(v:pk({self.EXTERNAL_KEY}/<0;1>/*),older(12960)))"
+        )
+        self._test_display_address(
+            f"TapMini{self.emulator.fingerprint}",
+            descriptor,
+            "tr(@0/<0;1>/*,and_v(v:pk(@1/<0;1>/*),older(12960)))",
         )
