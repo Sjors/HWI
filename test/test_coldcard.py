@@ -22,6 +22,7 @@ from test_device import (
     TestGetKeypool,
     TestGetDescriptors,
     TestRegisterDescriptor,
+    TestSegwitMiniscriptDisplay,
     TestSignMessage,
     TestSignTx,
 )
@@ -63,6 +64,7 @@ class ColdcardSimulator(DeviceEmulator):
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
         self.supports_taproot = is_edge
+        self.supports_segwit_miniscript = is_edge
         self.strict_bip48 = False
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
@@ -208,6 +210,7 @@ def coldcard_test_suite(simulator, bitcoind, interface, is_edge=False):
         returns_registration=False,
         supports_multiple_policies=is_edge,
     ))
+    suite.addTest(DeviceTestCase.parameterize(TestSegwitMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
     if is_edge:
         suite.addTest(DeviceTestCase.parameterize(TestColdcardEdgeDisplayAddress, bitcoind, emulator=dev_emulator, interface=interface))
 
