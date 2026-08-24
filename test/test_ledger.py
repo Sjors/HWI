@@ -17,6 +17,7 @@ from test_device import (
     TestDisplayAddress,
     TestGetKeypool,
     TestGetDescriptors,
+    TestMuSig2Display,
     TestRegisterDescriptor,
     TestSegwitMiniscriptDisplay,
     TestTaprootMiniscriptDisplay,
@@ -48,6 +49,7 @@ class LedgerEmulator(DeviceEmulator):
         self.supports_taproot = not legacy # Legacy does not support Taproot
         self.supports_segwit_miniscript = not legacy
         self.supports_taproot_miniscript = not legacy
+        self.supports_musig2 = not legacy
         self.strict_bip48 = True
         self.include_xpubs = True
         self.supports_device_multiple_multisig = True
@@ -199,6 +201,7 @@ def ledger_test_suite(emulator, bitcoind, interface, legacy=False):
         suite.addTest(DeviceTestCase.parameterize(TestRegisterDescriptor, bitcoind, emulator=dev_emulator, interface=interface, returns_registration=True))
         suite.addTest(DeviceTestCase.parameterize(TestSegwitMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestTaprootMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
+        suite.addTest(DeviceTestCase.parameterize(TestMuSig2Display, bitcoind, emulator=dev_emulator, interface=interface))
 
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
     return result.wasSuccessful()

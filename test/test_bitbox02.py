@@ -44,6 +44,7 @@ class BitBox02Emulator(DeviceEmulator):
         self.supports_taproot = False
         self.supports_segwit_miniscript = True
         self.supports_taproot_miniscript = True
+        self.supports_musig2 = False
         self.strict_bip48 = False
         self.include_xpubs = True
         self.supports_device_multiple_multisig = True

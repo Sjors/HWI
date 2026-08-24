@@ -35,6 +35,7 @@ class DeviceEmulator():
         self.supports_taproot = None
         self.supports_segwit_miniscript = None
         self.supports_taproot_miniscript = None
+        self.supports_musig2 = None
         self.strict_bip48 = None
         self.include_xpubs = None
         self.supports_device_multiple_multisig = None
@@ -53,6 +54,7 @@ class DeviceEmulator():
         assert self.supports_unsorted_ms is not None
         assert self.supports_segwit_miniscript is not None
         assert self.supports_taproot_miniscript is not None
+        assert self.supports_musig2 is not None
         assert self.strict_bip48 is not None
         assert self.include_xpubs is not None
         assert self.supports_device_multiple_multisig is not None
@@ -1045,4 +1047,19 @@ class TestTaprootMiniscriptDisplay(PolicyDisplayTestCase):
             f"TapMini{self.emulator.fingerprint}",
             descriptor,
             "tr(@0/<0;1>/*,and_v(v:pk(@1/<0;1>/*),older(12960)))",
+        )
+
+class TestMuSig2Display(PolicyDisplayTestCase):
+    def setUp(self):
+        if not self.emulator.supports_musig2:
+            self.skipTest("device does not support MuSig2 policies")
+        super().setUp()
+
+    def test_musig2(self):
+        device_key = self._get_account_key("m/87h/1h/0h")
+        descriptor = f"tr(musig({device_key},{self.EXTERNAL_KEY})/<0;1>/*)"
+        self._test_display_address(
+            f"MuSigDisplay{self.emulator.fingerprint}",
+            descriptor,
+            "tr(musig(@0,@1)/<0;1>/*)",
         )
