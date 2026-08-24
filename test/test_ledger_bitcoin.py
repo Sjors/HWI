@@ -17,7 +17,7 @@ from hwilib.devices.ledger_bitcoin.client_command import (
 
 class TestLedgerBitcoinClient(unittest.TestCase):
     PARTICIPANT_PUBKEY = bytes.fromhex("02" + "11" * 32)
-    AGG_XONLYKEY = bytes.fromhex("22" * 32)
+    AGGREGATE_PUBKEY = bytes.fromhex("03" + "22" * 32)
     TAPLEAF_HASH = bytes.fromhex("33" * 32)
 
     def test_decode_partial_signature(self):
@@ -35,7 +35,7 @@ class TestLedgerBitcoinClient(unittest.TestCase):
             + ser_compact_size(4)
             + pubnonce
             + self.PARTICIPANT_PUBKEY
-            + self.AGG_XONLYKEY
+            + self.AGGREGATE_PUBKEY
             + self.TAPLEAF_HASH
         )
         self.assertEqual(
@@ -44,7 +44,7 @@ class TestLedgerBitcoinClient(unittest.TestCase):
                 4,
                 MusigPubNonce(
                     participant_pubkey=self.PARTICIPANT_PUBKEY,
-                    agg_xonlykey=self.AGG_XONLYKEY,
+                    aggregate_pubkey=self.AGGREGATE_PUBKEY,
                     tapleaf_hash=self.TAPLEAF_HASH,
                     pubnonce=pubnonce,
                 ),
@@ -58,7 +58,7 @@ class TestLedgerBitcoinClient(unittest.TestCase):
             + ser_compact_size(5)
             + partial_signature
             + self.PARTICIPANT_PUBKEY
-            + self.AGG_XONLYKEY
+            + self.AGGREGATE_PUBKEY
         )
         self.assertEqual(
             result,
@@ -66,7 +66,7 @@ class TestLedgerBitcoinClient(unittest.TestCase):
                 5,
                 MusigPartialSignature(
                     participant_pubkey=self.PARTICIPANT_PUBKEY,
-                    agg_xonlykey=self.AGG_XONLYKEY,
+                    aggregate_pubkey=self.AGGREGATE_PUBKEY,
                     tapleaf_hash=None,
                     partial_signature=partial_signature,
                 ),

@@ -66,7 +66,7 @@ def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObje
         input_index = read_varint(res_buffer)
         pubnonce = res_buffer.read(66)
         participant_pk = res_buffer.read(33)
-        agg_xonlykey = res_buffer.read(32)
+        aggregate_pubkey = res_buffer.read(33)
         tapleaf_hash = res_buffer.read()
         if len(tapleaf_hash) == 0:
             tapleaf_hash = None
@@ -75,7 +75,7 @@ def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObje
             input_index,
             MusigPubNonce(
                 participant_pubkey=participant_pk,
-                agg_xonlykey=agg_xonlykey,
+                aggregate_pubkey=aggregate_pubkey,
                 tapleaf_hash=tapleaf_hash,
                 pubnonce=pubnonce
             )
@@ -84,7 +84,7 @@ def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObje
         input_index = read_varint(res_buffer)
         partial_signature = res_buffer.read(32)
         participant_pk = res_buffer.read(33)
-        agg_xonlykey = res_buffer.read(32)
+        aggregate_pubkey = res_buffer.read(33)
         tapleaf_hash = res_buffer.read()
         if len(tapleaf_hash) == 0:
             tapleaf_hash = None
@@ -93,7 +93,7 @@ def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObje
             input_index,
             MusigPartialSignature(
                 participant_pubkey=participant_pk,
-                agg_xonlykey=agg_xonlykey,
+                aggregate_pubkey=aggregate_pubkey,
                 tapleaf_hash=tapleaf_hash,
                 partial_signature=partial_signature
             )
