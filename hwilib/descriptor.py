@@ -755,12 +755,15 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
         if ctx != _ParseDescriptorContext.TOP:
             raise ValueError("Can only have tr at top level")
         multipath_len = None
-        internal_key, expr, key_expr_index = parse_pubkey(expr, key_expr_index)
+        internal_expr, expr = _get_expr(expr)
+        internal_key = PubkeyProvider.parse(internal_expr, key_expr_index)
+        key_expr_index += 1
         if internal_key.multipath_len > 1:
             multipath_len = internal_key.multipath_len
         subscripts = []
         depths = []
         if expr:
+            expr = _get_const(expr, ",")
             # Path from top of the tree to what we're currently processing.
             # branches[i] == False: left branch in the i'th step from the top
             # branches[i] == true: right branch
