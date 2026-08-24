@@ -1063,3 +1063,25 @@ class TestMuSig2Display(PolicyDisplayTestCase):
             descriptor,
             "tr(musig(@0,@1)/<0;1>/*)",
         )
+
+class TestMuSig2MiniscriptDisplay(PolicyDisplayTestCase):
+    def setUp(self):
+        if not self.emulator.supports_musig2:
+            self.skipTest("device does not support MuSig2 policies")
+        if not self.emulator.supports_taproot_miniscript:
+            self.skipTest("device does not support tapscript Miniscript policies")
+        super().setUp()
+
+    def test_musig2_miniscript(self):
+        device_key = self._get_account_key("m/87h/1h/0h")
+        recovery_key = self._get_account_key("m/86h/1h/1h")
+        descriptor = (
+            f"tr(musig({device_key},{self.EXTERNAL_KEY})/<0;1>/*,"
+            f"and_v(v:pk({recovery_key}/<0;1>/*),older(12960)))"
+        )
+        self._test_display_address(
+            f"MuSigMini{self.emulator.fingerprint}",
+            descriptor,
+            "tr(musig(@0,@1)/<0;1>/*,"
+            "and_v(v:pk(@2/<0;1>/*),older(12960)))",
+        )
