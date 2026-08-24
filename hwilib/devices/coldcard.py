@@ -257,7 +257,7 @@ class ColdcardClient(HardwareWalletClient):
         # request to infer a policy for any remaining unsigned device inputs.
         if any(
             psbt_in.has_fingerprint(master_fp)
-            and not psbt_in.has_signature(master_fp)
+            and not psbt_in.has_signing_data(master_fp)
             for psbt_in in psbt.inputs
         ):
             psbt = self._sign_tx_once(psbt)
