@@ -1,5 +1,6 @@
 #! /usr/bin/env python3
 
+from hwilib.commands import displayaddress
 from hwilib.descriptor import (
     MiniscriptDescriptor,
     parse_descriptor,
@@ -11,7 +12,7 @@ from hwilib.descriptor import (
     WSHDescriptor,
 )
 from hwilib.common import AddressType
-from hwilib.errors import InvalidPolicyError
+from hwilib.errors import BadArgumentError, InvalidPolicyError
 
 import re
 import unittest
@@ -176,6 +177,12 @@ class TestDescriptor(unittest.TestCase):
             [provider.get_bip388_key_info() for provider in descriptor.get_pubkey_providers()],
             [key_0, key_1, key_2, key_3],
         )
+
+    def test_taproot_script_tree_requires_registration(self):
+        key = "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+        descriptor = f"tr({key},pk({key}))"
+        with self.assertRaisesRegex(BadArgumentError, "registered BIP 388 policy"):
+            displayaddress(object(), desc=descriptor)
 
     def test_derive(self):
         xpub = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
