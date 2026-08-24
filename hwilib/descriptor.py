@@ -13,6 +13,7 @@ Descriptors can be parsed, however the actual scripts are not generated.
 from .key import (
     ExtendedKey,
     KeyOriginInfo,
+    is_hardened,
     parse_multipath,
     multipath_to_string,
     path_to_string,
@@ -321,6 +322,100 @@ class PubkeyProvider(object):
         return self.pubkey < other.pubkey
 
 
+class MusigPubkeyProvider(PubkeyProvider):
+    """
+    A ``musig()`` aggregate key expression with a shared derivation path, as specified in BIP 390.
+    """
+
+    def __init__(
+        self,
+        participants: List['PubkeyProvider'],
+        deriv_path: Optional[List[List[int]]],
+        ranged: bool,
+    ) -> None:
+        r"""
+        :param participants: The :class:`PubkeyProvider`\ s aggregated by this ``musig()`` expression
+        :param deriv_path: Derivation path for the aggregate key
+        :param ranged: Whether the aggregate key is ranged
+        """
+        super().__init__(None, "", deriv_path, participants[0].expr_index, ranged)
+        self.participants = participants
+
+    @classmethod
+    def parse_musig(cls, s: str, key_expr_index: int) -> Tuple['MusigPubkeyProvider', int]:
+        """
+        Deserialize a ``musig()`` key expression from the string into a ``MusigPubkeyProvider``.
+
+        :param s: String containing the ``musig()`` key expression
+        :param key_expr_index: The position of the first participant key within the descriptor
+        :return: A new ``MusigPubkeyProvider`` and the position of the next key expression
+        :raises: ValueError: if the ``musig()`` key expression is malformed
+        """
+        func, expr = _get_func_expr(s)
+        if func != "musig":
+            raise ValueError(f"Expected musig() key expression, got {func}()")
+
+        suffix = s[s.rindex(")") + 1:]
+        deriv_path = None
+        ranged = False
+        if suffix:
+            if not suffix.startswith("/"):
+                raise ValueError("MuSig derivation path must begin with '/'")
+            deriv_path, ranged = _parse_ranged_deriv_path(suffix[1:])
+
+        for path in deriv_path or []:
+            for step in path:
+                if is_hardened(step):
+                    raise ValueError("musig() cannot have hardened derivation steps")
+
+        participants = []
+        while expr:
+            if expr.startswith("musig("):
+                raise ValueError("musig() key expressions cannot be nested")
+            participant, expr, key_expr_index = parse_pubkey(expr, key_expr_index)
+            participants.append(participant)
+        if len(participants) < 2:
+            raise ValueError("musig() requires at least two participants")
+        if deriv_path is not None or ranged:
+            for participant in participants:
+                if participant.extkey is None:
+                    raise ValueError("musig() derivation requires extended public key participants")
+                if participant.ranged or participant.multipath_len > 1:
+                    raise ValueError("musig() participants cannot be ranged or multipath when musig() itself has a derivation path")
+        return cls(participants, deriv_path, ranged), key_expr_index
+
+    def to_string(self, hardened_char: str = "h") -> str:
+        """
+        Serialize the ``musig()`` expression to a string to be used in a descriptor
+
+        :return: The ``musig()`` expression as a string
+        """
+        participants = ",".join(p.to_string(hardened_char) for p in self.participants)
+        result = f"musig({participants})"
+        if self.deriv_path:
+            result += multipath_to_string(self.deriv_path, hardened_char)
+        if self.ranged:
+            result += "/*"
+        return result
+
+    def get_bip388_placeholder(self) -> str:
+        """
+        Get the key placeholder expression for this ``musig()`` expression to be used in BIP 388 Wallet Policies.
+
+        :return: The key placeholder expression
+        :raises InvalidPolicyError: If the aggregate key does not meet the requirements for a wallet policy as specified in BIP 388
+        """
+        self._check_bip388_deriv_path()
+        for participant in self.participants:
+            if participant.deriv_path is not None or participant.ranged:
+                raise InvalidPolicyError("BIP 388 requires all derivation to follow musig() aggregation")
+        participants = ",".join(f"@{p.expr_index}" for p in self.participants)
+        return f"musig({participants}){self._get_bip388_deriv_suffix()}"
+
+    def get_pubkey_bytes(self, pos: int, multipath_pos: int = 0) -> bytes:
+        raise NotImplementedError("HWI cannot expand musig() aggregate keys")
+
+
 class Descriptor(object):
     r"""
     An abstract class for Descriptors themselves.
@@ -389,28 +484,40 @@ class Descriptor(object):
     def get_pubkey_providers(self) -> list['PubkeyProvider']:
         r"""
         Get the individual pubkey expressions contained in this descriptor, in the order in
-        which they first appear in the descriptor string. A key that appears more than once
-        is returned only once, matching the BIP 388 Key information vector, so these can be
-        used with :func:`get_bip388_template` to get a full BIP 388 Wallet Policy for this
-        descriptor.
+        which they first appear in the descriptor string. A ``musig()`` aggregate key is
+        replaced by its participant keys, and a key that appears more than once is returned
+        only once, matching the BIP 388 Key information vector, so these can be used with
+        :func:`get_bip388_template` to get a full BIP 388 Wallet Policy for this descriptor.
 
         :return: List of :class:`PubkeyProvider`\ s
         """
         out: Dict[str, 'PubkeyProvider'] = {}
         for pubkey in self.get_derivation_providers():
-            out.setdefault(pubkey.get_bip388_key_info(), pubkey)
+            participants = pubkey.participants if isinstance(pubkey, MusigPubkeyProvider) else [pubkey]
+            for participant in participants:
+                out.setdefault(participant.get_bip388_key_info(), participant)
         return list(out.values())
 
     def get_derivation_providers(self) -> list['PubkeyProvider']:
         r"""
         Get the key expressions contained in this descriptor whose derivation path suffixes
         belong to the descriptor, in the same order that they appear in the descriptor
-        string. Unlike :func:`get_pubkey_providers`, a key that appears more than once is
-        returned once for each appearance.
+        string, including keys that appear more than once. Unlike
+        :func:`get_pubkey_providers`, a ``musig()`` aggregate key with its own derivation
+        path suffix is returned as a single :class:`MusigPubkeyProvider`, since the suffix
+        applies to the aggregate key. Participant keys are returned for a ``musig()``
+        without a derivation path suffix, where any derivation happens on the participant
+        keys before aggregation.
 
         :return: List of :class:`PubkeyProvider`\ s
         """
-        out = list(self.pubkeys)
+        out: list['PubkeyProvider'] = []
+        for pubkey in self.pubkeys:
+            if isinstance(pubkey, MusigPubkeyProvider) and pubkey.deriv_path is None and not pubkey.ranged:
+                # Without an aggregate derivation path, derivation happens on the participant keys
+                out.extend(pubkey.participants)
+            else:
+                out.append(pubkey)
         for subdescriptor in self.subdescriptors:
             out.extend(subdescriptor.get_derivation_providers())
         return out
@@ -880,6 +987,22 @@ def _parse_miniscript(
     return MiniscriptDescriptor(wrappers, name, args), key_expr_index
 
 
+def _parse_key_expr(expr: str, key_expr_index: int) -> Tuple['PubkeyProvider', int]:
+    """
+    :meta private:
+
+    Parse a single key expression, which may be a ``musig()`` aggregate key.
+
+    :param expr: The key expression to parse
+    :param key_expr_index: The position of the key within the descriptor
+    :return: The parsed :class:`PubkeyProvider` and the position of the next key expression
+    :raises: ValueError: if the key expression is malformed
+    """
+    if expr.startswith("musig("):
+        return MusigPubkeyProvider.parse_musig(expr, key_expr_index)
+    return PubkeyProvider.parse(expr, key_expr_index), key_expr_index + 1
+
+
 def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index: int) -> Tuple['Descriptor', int]:
     """
     :meta private:
@@ -900,6 +1023,8 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
             return _parse_miniscript(desc, key_expr_index, _MiniscriptContext.SEGWIT_V0)
         raise
     if func == "pk":
+        if expr.startswith("musig("):
+            raise ValueError("musig() is only allowed in tr() descriptors")
         pubkey, expr, key_expr_index = parse_pubkey(expr, key_expr_index)
         if expr:
             raise ValueError("more than one pubkey in pk descriptor")
@@ -907,6 +1032,8 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
     if func == "pkh":
         if not (ctx == _ParseDescriptorContext.TOP or ctx == _ParseDescriptorContext.P2SH or ctx == _ParseDescriptorContext.P2WSH):
             raise ValueError("Can only have pkh at top level, in sh(), or in wsh()")
+        if expr.startswith("musig("):
+            raise ValueError("musig() is only allowed in tr() descriptors")
         pubkey, expr, key_expr_index = parse_pubkey(expr, key_expr_index)
         if expr:
             raise ValueError("More than one pubkey in pkh descriptor")
@@ -940,6 +1067,8 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
     if func == "wpkh":
         if not (ctx == _ParseDescriptorContext.TOP or ctx == _ParseDescriptorContext.P2SH):
             raise ValueError("Can only have wpkh() at top level or inside sh()")
+        if expr.startswith("musig("):
+            raise ValueError("musig() is only allowed in tr() descriptors")
         pubkey, expr, key_expr_index = parse_pubkey(expr, key_expr_index)
         if expr:
             raise ValueError("More than one pubkey in pkh descriptor")
@@ -959,8 +1088,7 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
             raise ValueError("Can only have tr at top level")
         multipath_len = None
         internal_expr, expr = _get_expr(expr)
-        internal_key = PubkeyProvider.parse(internal_expr, key_expr_index)
-        key_expr_index += 1
+        internal_key, key_expr_index = _parse_key_expr(internal_expr, key_expr_index)
         if internal_key.multipath_len > 1:
             multipath_len = internal_key.multipath_len
         subscripts: List[Descriptor] = []
@@ -1037,7 +1165,9 @@ def parse_descriptor(desc: str) -> 'Descriptor':
     # BIP 388 Key information vector.
     indexes: Dict[str, int] = {}
     for pubkey in descriptor.get_derivation_providers():
-        pubkey.expr_index = indexes.setdefault(pubkey.get_bip388_key_info(), len(indexes))
+        participants = pubkey.participants if isinstance(pubkey, MusigPubkeyProvider) else [pubkey]
+        for participant in participants:
+            participant.expr_index = indexes.setdefault(participant.get_bip388_key_info(), len(indexes))
     return descriptor
 
 class RegisteredDescriptor:

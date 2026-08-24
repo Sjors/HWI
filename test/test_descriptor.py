@@ -356,6 +356,67 @@ class TestDescriptor(unittest.TestCase):
             [key, other],
         )
 
+    def test_parse_invalid_musig(self):
+        key_0 = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
+        key_1 = "tpubDFHiBJDeNvqPWNJbzzxqDVXmJZoNn2GEtoVcFhMjXipQiorGUmps3e5ieDGbRrBPTFTh9TXEKJCwbAGW9uZnfrVPbMxxbFohuFzfT6VThty"
+        with self.assertRaisesRegex(ValueError, "at least two participants"):
+            parse_descriptor(f"tr(musig({key_0}))")
+        with self.assertRaisesRegex(ValueError, "Empty key expression"):
+            parse_descriptor(f"tr(musig({key_0},,{key_1}))")
+        with self.assertRaisesRegex(ValueError, "Trailing comma"):
+            parse_descriptor(f"tr(musig({key_0},{key_1},))")
+        with self.assertRaisesRegex(ValueError, "cannot be nested"):
+            parse_descriptor(f"tr(musig(musig({key_0},{key_1}),{key_1}))")
+        with self.assertRaisesRegex(ValueError, "Invalid ranged derivation path"):
+            parse_descriptor(f"tr(musig({key_0},{key_1})/0*)")
+
+    def test_parse_musig_bip390(self):
+        # Test vectors from BIP 390
+        hex_1 = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+        hex_2 = "03dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659"
+        hex_3 = "023590a94e768f8e1815c2f24b4d80a8e3149316c3518ce7b7ad338368d038ca66"
+        xpub_a = "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL"
+        xpub_b = "xpub68NZiKmJWnxxS6aaHmn81bvJeTESw724CRDs6HbuccFQN9Ku14VQrADWgqbhhTHBaohPX4CjNLf9fq9MYo6oDaPPLPxSb7gwQN3ih19Zm4Y"
+        valid = [
+            f"tr(musig({hex_1},{hex_2},{hex_3}))",
+            f"tr(musig({xpub_a}/1,{xpub_a}/1)/2)",
+            # Participants may be ranged when the aggregate key is not
+            f"tr(musig({xpub_a}/*,{xpub_b}/*))",
+        ]
+        for descriptor in valid:
+            self.assertEqual(parse_descriptor(descriptor).to_string_no_checksum(), descriptor)
+
+        # Derivation happens on the participant keys when the aggregate key has no path
+        self.assertEqual(
+            parse_descriptor(f"tr(musig({xpub_a}/*,{xpub_b}/*))").derive(3).to_string_no_checksum(),
+            f"tr(musig({xpub_a}/3,{xpub_b}/3))",
+        )
+
+        with self.assertRaisesRegex(ValueError, "only allowed in tr"):
+            parse_descriptor(f"pk(musig({hex_1},{hex_2},{hex_3}))")
+        with self.assertRaisesRegex(ValueError, "only allowed in tr"):
+            parse_descriptor(f"pkh(musig({hex_1},{hex_2},{hex_3}))")
+        with self.assertRaisesRegex(ValueError, "only allowed in tr"):
+            parse_descriptor(f"wpkh(musig({hex_1},{hex_2},{hex_3}))")
+        with self.assertRaisesRegex(ValueError, "only allowed in tr"):
+            parse_descriptor(f"wsh(pk(musig({hex_1},{hex_2},{hex_3})))")
+        with self.assertRaisesRegex(ValueError, "Unknown Miniscript fragment: musig"):
+            parse_descriptor(f"wsh(musig({hex_1},{hex_2},{hex_3}))")
+        with self.assertRaisesRegex(ValueError, "extended public key participants"):
+            parse_descriptor(f"tr(musig({hex_1},{hex_2},{hex_3})/0/0)")
+        with self.assertRaisesRegex(ValueError, "cannot be ranged or multipath"):
+            parse_descriptor(f"tr(musig({xpub_a}/*,{xpub_b})/0/*)")
+        with self.assertRaisesRegex(ValueError, "cannot be ranged or multipath"):
+            parse_descriptor(f"tr(musig({xpub_a}/<0;1>,{xpub_b})/<2;3>)")
+        with self.assertRaisesRegex(ValueError, "hardened derivation steps"):
+            parse_descriptor(f"tr(musig({xpub_a},{xpub_b})/0h/*)")
+        with self.assertRaises(ValueError):
+            parse_descriptor(f"tr(musig({xpub_a},{xpub_b})/0/*h)")
+
+        # BIP 388 does not allow derivation before aggregation
+        with self.assertRaisesRegex(InvalidPolicyError, "follow musig"):
+            parse_descriptor(f"tr(musig({xpub_a}/1,{xpub_b}/1)/<0;1>/*)").get_bip388_template()
+
     def test_parse_descriptor_replace_h(self):
         d = "wpkh([00000001/84h/1h/0h]tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B/0/0)"
         desc = parse_descriptor(d)
@@ -511,6 +572,16 @@ class TestDescriptor(unittest.TestCase):
             "tr([6738736c/86'/0'/0']xpub6CryUDWPS28eR2cDyojB8G354izmx294BdjeSvH469Ty3o2E6Tq5VjBJCn8rWBgesvTJnyXNAJ3QpLFGuNwqFXNt3gn612raffLWfdHNkYL/<0;1>/*)",
             ["[6738736c/86'/0'/0']xpub6CryUDWPS28eR2cDyojB8G354izmx294BdjeSvH469Ty3o2E6Tq5VjBJCn8rWBgesvTJnyXNAJ3QpLFGuNwqFXNt3gn612raffLWfdHNkYL"],
             "tr(@0/<0;1>/*)"
+        )
+        musig_descriptor = "tr(musig([6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw,[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7)/<0;1>/*)"
+        check(
+            musig_descriptor,
+            ["[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw", "[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7"],
+            "tr(musig(@0,@1)/<0;1>/*)"
+        )
+        self.assertEqual(
+            parse_descriptor(musig_descriptor).derive(7, multipath_index=1).to_string_no_checksum(hardened_char="'"),
+            "tr(musig([6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw,[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7)/1/7)",
         )
         check(
             "wsh(sortedmulti(2,[6738736c/48'/0'/0'/2']xpub6FC1fXFP1GXLX5TKtcjHGT4q89SDRehkQLtbKJ2PzWcvbBHtyDsJPLtpLtkGqYNYZdVVAjRQ5kug9CsapegmmeRutpP7PW4u4wVF9JfkDhw/<0;1>/*,[b2b1f0cf/48'/0'/0'/2']xpub6EWhjpPa6FqrcaPBuGBZRJVjzGJ1ZsMygRF26RwN932Vfkn1gyCiTbECVitBjRCkexEvetLdiqzTcYimmzYxyR1BZ79KNevgt61PDcukmC7/<0;1>/*))",
