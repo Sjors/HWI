@@ -19,6 +19,7 @@ from test_device import (
     TestGetKeypool,
     TestGetDescriptors,
     TestRegisterDescriptor,
+    TestSegwitMiniscriptDisplay,
     TestSignTx,
 )
 
@@ -40,6 +41,7 @@ class BitBox02Emulator(DeviceEmulator):
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
         self.supports_taproot = False
+        self.supports_segwit_miniscript = True
         self.strict_bip48 = False
         self.include_xpubs = True
         self.supports_device_multiple_multisig = True
@@ -138,6 +140,7 @@ def bitbox02_test_suite(simulator, bitcoind, interface):
         sorted=False,
         supports_multiple_policies=False,
     ))
+    suite.addTest(DeviceTestCase.parameterize(TestSegwitMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
 
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
     return result.wasSuccessful()
