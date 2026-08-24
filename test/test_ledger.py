@@ -18,6 +18,7 @@ from test_device import (
     TestGetKeypool,
     TestGetDescriptors,
     TestMuSig2Display,
+    TestMuSig2MiniscriptDisplay,
     TestRegisterDescriptor,
     TestSegwitMiniscriptDisplay,
     TestTaprootMiniscriptDisplay,
@@ -202,6 +203,7 @@ def ledger_test_suite(emulator, bitcoind, interface, legacy=False):
         suite.addTest(DeviceTestCase.parameterize(TestSegwitMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestTaprootMiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
         suite.addTest(DeviceTestCase.parameterize(TestMuSig2Display, bitcoind, emulator=dev_emulator, interface=interface))
+        suite.addTest(DeviceTestCase.parameterize(TestMuSig2MiniscriptDisplay, bitcoind, emulator=dev_emulator, interface=interface))
 
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
     return result.wasSuccessful()
