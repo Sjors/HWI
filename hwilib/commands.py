@@ -42,6 +42,7 @@ from .descriptor import (
     RegisteredDescriptor,
     parse_descriptor,
     MultisigDescriptor,
+    MusigPubkeyProvider,
     TRDescriptor,
     PKHDescriptor,
     PubkeyProvider,
@@ -514,6 +515,8 @@ def displayaddress(
             if descriptor.subdescriptors:
                 raise BadArgumentError("tr() descriptors with a script tree require a registered BIP 388 policy; use --registration")
             pubkey = descriptor.pubkeys[0]
+            if isinstance(pubkey, MusigPubkeyProvider):
+                raise BadArgumentError("musig() addresses require a registered BIP 388 policy; use --registration")
             if pubkey.origin is None:
                 raise BadArgumentError(f"Descriptor missing origin info: {desc}")
             if pubkey.origin.fingerprint != client.get_master_fingerprint():

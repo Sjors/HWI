@@ -184,6 +184,12 @@ class TestDescriptor(unittest.TestCase):
         with self.assertRaisesRegex(BadArgumentError, "registered BIP 388 policy"):
             displayaddress(object(), desc=descriptor)
 
+    def test_musig_requires_registration(self):
+        key_0 = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+        key_1 = "03dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659"
+        with self.assertRaisesRegex(BadArgumentError, "registered BIP 388 policy"):
+            displayaddress(object(), desc=f"tr(musig({key_0},{key_1}))")
+
     def test_derive(self):
         xpub = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
         descriptor_str = "wsh(multi(1,{0}/<0;1;2>/*,{0}/<10;11;12>/*))".format(xpub)
