@@ -266,14 +266,32 @@ class PubkeyProvider(object):
         :return: The key placeholder expression
         :raises InvalidPolicyError: If the pubkey does not meet the requirements for a wallet policy as specified in BIP 388
         """
+        self._check_bip388_deriv_path()
+        return f"@{self.expr_index}{self._get_bip388_deriv_suffix()}"
+
+    def _check_bip388_deriv_path(self) -> None:
+        """
+        :meta private:
+
+        Check the BIP 388 requirements on this pubkey's derivation path.
+
+        :raises InvalidPolicyError: If the pubkey does not meet the requirements for a wallet policy as specified in BIP 388
+        """
         if not self.ranged:
             raise InvalidPolicyError("BIP 388 requires all pubkeys to be ranged")
         if self.multipath_len > 2:
             raise InvalidPolicyError("BIP 388 requires all multipath specifiers to be exactly 2 elements")
+
+    def _get_bip388_deriv_suffix(self) -> str:
+        """
+        :meta private:
+
+        Get the derivation path suffix for this pubkey's BIP 388 key placeholder expression.
+
+        :return: The derivation path suffix, including the ``/*`` range marker
+        """
         deriv_path = multipath_to_string(self.deriv_path, hardened_char="'") if self.deriv_path else ""
-        if self.ranged:
-            deriv_path += "/*"
-        return f"@{self.expr_index}{deriv_path}"
+        return deriv_path + "/*"
 
     def get_bip388_key_info(self) -> str:
         """
