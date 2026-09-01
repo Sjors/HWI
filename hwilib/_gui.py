@@ -4,10 +4,12 @@ import base64
 import json
 import logging
 import sys
+import threading
 import time
 from typing import Callable
 
 from . import commands, __version__
+from . import _ipc
 from ._cli import HWIArgumentParser
 from .errors import handle_errors, DEVICE_NOT_INITIALIZED
 from .common import AddressType, Chain
@@ -27,7 +29,7 @@ except ImportError:
     exit(-1)
 
 from PySide2.QtGui import QRegExpValidator
-from PySide2.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QLineEdit, QMessageBox, QMainWindow, QMenu
+from PySide2.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QLabel, QLineEdit, QMessageBox, QMainWindow, QMenu
 from PySide2.QtCore import QCoreApplication, QRegExp, Signal, Slot
 
 def do_command(f, *args, **kwargs):
@@ -321,6 +323,8 @@ except ImportError:
     pass
 
 class HWIQt(QMainWindow):
+    ipc_status_changed = Signal(str)
+
     def __init__(self, passphrase=None, chain=Chain.MAIN, allow_emulators: bool = False):
         super(HWIQt, self).__init__()
         self.ui = Ui_MainWindow()
@@ -356,6 +360,36 @@ class HWIQt(QMainWindow):
         self.ui.toggle_passphrase_button.clicked.connect(self.toggle_passphrase)
 
         self.ui.enumerate_combobox.currentIndexChanged.connect(self.get_client_and_device_info)
+
+        self.ipc_status_label = QLabel()
+        self.statusBar().addPermanentWidget(self.ipc_status_label)
+        self.ipc_status_changed.connect(self.set_ipc_status)
+        self.start_ipc_signer_service()
+
+    @Slot(str)
+    def set_ipc_status(self, status):
+        logging.info(status)
+        self.ipc_status_label.setText(status)
+
+    def start_ipc_signer_service(self):
+        """Serve as the external signer of a Bitcoin Core node over IPC, if
+        one is listening on the default socket path for our chain."""
+        if _ipc.capnp is None:
+            self.set_ipc_status('Core IPC: unavailable (install pycapnp)')
+            return
+        socket_path = _ipc.default_socket_path(self.chain)
+        self.set_ipc_status('Core IPC: connecting...')
+
+        def serve():
+            try:
+                _ipc.run_signer_service(
+                    socket_path, self.passphrase, self.allow_emulators,
+                    on_registered=lambda: self.ipc_status_changed.emit(f'Core IPC: connected ({socket_path})'))
+                self.ipc_status_changed.emit('Core IPC: disconnected')
+            except Exception as e:
+                self.ipc_status_changed.emit(f'Core IPC: not connected ({e})')
+
+        threading.Thread(target=serve, name='ipc-signer', daemon=True).start()
 
     def clear_info(self):
         self.ui.getxpub_button.setEnabled(False)
