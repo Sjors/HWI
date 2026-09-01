@@ -452,15 +452,20 @@ if [[ -n ${build_bitbox02} ]]; then
 fi
 
 if [[ -n ${build_bitcoind} ]]; then
+    # Repository and branch can be overridden, e.g. to test against a Bitcoin
+    # Core branch that is not merged yet (like the IPC signer support).
+    BITCOIN_REPO_URL=${BITCOIN_REPO_URL:-https://github.com/bitcoin/bitcoin.git}
+    BITCOIN_REPO_BRANCH=${BITCOIN_REPO_BRANCH:-master}
+
     # Clone bitcoind if it doesn't exist, or update it if it does
     bitcoind_setup_needed=false
     if [ ! -d "bitcoin" ]; then
-        git clone https://github.com/bitcoin/bitcoin.git
+        git clone --branch "${BITCOIN_REPO_BRANCH}" "${BITCOIN_REPO_URL}"
         cd bitcoin
         bitcoind_setup_needed=true
     else
         cd bitcoin
-        git reset --hard origin/master
+        git reset --hard "origin/${BITCOIN_REPO_BRANCH}"
         git fetch
 
         # Determine if we need to pull. From https://stackoverflow.com/a/3278427
@@ -484,5 +489,6 @@ if [[ -n ${build_bitcoind} ]]; then
 
     # Do the build
     cmake -B build --toolchain depends/x86_64-pc-linux-gnu/toolchain.cmake -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF
-    cmake --build build -j $(nproc) --target bitcoind
+    # bitcoin-node is the multiprocess variant, used by the Core IPC signer test
+    cmake --build build -j $(nproc) --target bitcoind bitcoin-node
 fi
