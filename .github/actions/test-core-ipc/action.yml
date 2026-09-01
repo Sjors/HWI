@@ -1,0 +1,44 @@
+name: Test Core IPC
+description: Run the Bitcoin Core IPC signer test against an installed HWI wheel.
+runs:
+  using: composite
+  steps:
+    # The install-sim action uses poetry for some devices.
+    - shell: bash
+      run: |
+        pip install poetry
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: dist
+        path: dist/
+
+    # Install the wheel with the ipc extra, so the test drives the packaged
+    # hwi rather than the source tree.
+    - name: Install (Wheel)
+      shell: bash
+      run: |
+        wheel=$(ls dist/*.whl)
+        pip install "${wheel}[ipc]"
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: bitcoind
+
+    - shell: bash
+      run: |
+        tar -xvf bitcoind.tar.gz
+
+    - uses: ./.github/actions/install-sim
+      with:
+        device: ${{ matrix.device }}
+
+    - name: Run test
+      shell: bash
+      run: |
+        cd test; ./run_tests.py --${{ matrix.device }} --core-ipc-only --interface=cli --device-only; cd ..
+
+    - if: failure()
+      shell: bash
+      run: |
+        tail -v -n +1 test/*.std*

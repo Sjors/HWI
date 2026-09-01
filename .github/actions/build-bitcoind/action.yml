@@ -1,5 +1,14 @@
 name: Build bitcoind
 description: Build bitcoind with depends.
+inputs:
+  repo-url:
+    description: Bitcoin Core repository to build
+    required: false
+    default: https://github.com/bitcoin/bitcoin.git
+  branch:
+    description: Branch of the repository to build
+    required: false
+    default: master
 runs:
   using: composite
   steps:
@@ -19,11 +28,13 @@ runs:
     - shell: bash
       env:
         CCACHE_MAXSIZE: '20M'
+        BITCOIN_REPO_URL: ${{ inputs.repo-url }}
+        BITCOIN_REPO_BRANCH: ${{ inputs.branch }}
       run: |
         ccache --zero-stats
         cd test; ./setup_environment.sh --bitcoind; cd ..
         ccache --show-stats --verbose
-        tar -czf bitcoind.tar.gz test/work/bitcoin/build/bin/bitcoind
+        tar -czf bitcoind.tar.gz test/work/bitcoin/build/bin/bitcoind test/work/bitcoin/build/bin/bitcoin-node
 
     - uses: actions/cache/save@v4
       if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
