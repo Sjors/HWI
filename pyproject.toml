@@ -25,6 +25,9 @@ dependencies = [
 qt = [
     "pyside2 (>=5.15.2.1,<6.0) ; python_version < '3.11'",
 ]
+ipc = [
+    "pycapnp (>=2.0.0,<3.0.0)",
+]
 
 [dependency-groups]
 dev = [

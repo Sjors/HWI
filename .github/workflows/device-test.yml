@@ -16,7 +16,7 @@ on:
 
 jobs:
   test-device:
-    name: Python ${{ matrix.python-version }} ${{ matrix.device }} ${{ matrix.test.script || matrix.test.interface }}
+    name: Python ${{ matrix.python-version }} ${{ matrix.device }} ${{ matrix.test.core_ipc && format('Core IPC ({0})', matrix.test.core_ipc) || matrix.test.script || matrix.test.interface }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     strategy:
@@ -32,6 +32,12 @@ jobs:
           - {script: 'Wheel'}
           - {script: 'Sdist'}
           - {script: 'Bindist'}
+        # The Bitcoin Core IPC signer test gets one dedicated job per device,
+        # on the newest Python and against the wheel.
+        include:
+          - python-version: '3.14'
+            device: ${{ inputs.device }}
+            test: {core_ipc: 'Wheel'}
     container: python:${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v7
@@ -41,3 +47,6 @@ jobs:
       - name: run dist test
         if: ${{ matrix.test.script }}
         uses: ./.github/actions/test-dist
+      - name: run Core IPC test
+        if: ${{ matrix.test.core_ipc }}
+        uses: ./.github/actions/test-core-ipc

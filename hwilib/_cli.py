@@ -117,6 +117,14 @@ def install_udev_rules_handler(args: argparse.Namespace) -> Dict[str, bool]:
 def register_descriptor_handler(args: argparse.Namespace, client: HardwareWalletClient) -> Dict[str, str]:
     return register_descriptor(client, args.name, args.descriptor)
 
+def ipc_signer_handler(args: argparse.Namespace) -> Dict[str, Any]:
+    from ._ipc import ipc_signer_handler as run_ipc_signer
+    result: Dict[str, Any] = {}
+    with handle_errors(result=result):
+        run_ipc_signer(args)
+        result = {'success': True}
+    return result
+
 class HWIHelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
     pass
 
@@ -254,6 +262,10 @@ def get_parser() -> HWIArgumentParser:
     register_descriptor_parser.add_argument("descriptor", help="The descriptor to register.")
     register_descriptor_parser.set_defaults(func=register_descriptor_handler)
 
+    ipc_parser = subparsers.add_parser('ipc', help='Connect to a Bitcoin Core node IPC socket and serve as its external signer until the node disconnects')
+    ipc_parser.add_argument('--socket-path', help='Path to the unix socket the node listens on with -ipcbind. Defaults to node.sock in the default Bitcoin Core datadir of the chain given by --chain', default=None)
+    ipc_parser.set_defaults(func=ipc_signer_handler)
+
     if sys.platform.startswith("linux"):
         udevrules_parser = subparsers.add_parser('installudevrules', help='Install and load the udev rule files for the hardware wallet devices')
         udevrules_parser.add_argument('--location', help='The path where the udev rules files will be copied', default='/etc/udev/rules.d/')
@@ -297,6 +309,10 @@ def process_commands(cli_args: List[str]) -> Any:
 
     # List all available hardware wallet devices
     if command == 'enumerate':
+        return args.func(args)
+
+    # Serve as a Bitcoin Core external signer over IPC
+    if command == 'ipc':
         return args.func(args)
 
     # Install the devices udev rules for Linux

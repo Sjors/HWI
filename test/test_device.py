@@ -59,8 +59,9 @@ class DeviceEmulator():
 
 # Class for bitcoind control and RPC
 class Bitcoind():
-    def __init__(self, bitcoind_path):
+    def __init__(self, bitcoind_path, extra_args=None):
         self.bitcoind_path = bitcoind_path
+        self.extra_args = extra_args if extra_args is not None else []
         self.datadir = tempfile.mkdtemp()
         self.rpc = None
         self.bitcoind_proc = None
@@ -89,7 +90,7 @@ class Bitcoind():
                 "-keypool=1",
                 f"-port={self.p2p_port}",
                 f"-rpcport={self.rpc_port}"
-            ]
+            ] + self.extra_args
         )
 
         atexit.register(self.cleanup)
@@ -132,9 +133,9 @@ class Bitcoind():
             self.bitcoind_proc.kill()
         shutil.rmtree(self.datadir)
 
-    @staticmethod
-    def create(*args, **kwargs):
-        c = Bitcoind(*args, **kwargs)
+    @classmethod
+    def create(cls, *args, **kwargs):
+        c = cls(*args, **kwargs)
         c.start()
         return c
 

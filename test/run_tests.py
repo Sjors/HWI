@@ -5,6 +5,7 @@ import sys
 import unittest
 
 from test_base58 import TestBase58
+from test_ipc import TestDefaultSocketPath
 from test_bech32 import TestSegwitAddress
 from test_bip32 import TestBIP32
 from test_coldcard import coldcard_test_suite, TestColdcardFirmware
@@ -73,12 +74,17 @@ parser.add_argument('--bitbox02-path', dest='bitbox02_path', help='Path to BitBo
 parser.add_argument('--all', help='Run tests on all existing simulators', default=False, action='store_true')
 parser.add_argument('--bitcoind', help='Path to bitcoind', default='work/bitcoin/build/bin/bitcoind')
 parser.add_argument('--interface', help='Which interface to send commands over', choices=['library', 'cli', 'bindist', 'stdin'], default='library')
+parser.add_argument('--core-ipc', dest='core_ipc', help='Also run the Bitcoin Core IPC signer test for each enabled device (needs the bitcoin-node binary next to bitcoind and pycapnp installed)', default=False, action='store_true')
+parser.add_argument('--core-ipc-only', dest='core_ipc_only', help='Run only the Bitcoin Core IPC signer test, skipping the other device tests. Implies --core-ipc', default=False, action='store_true')
 
 parser.add_argument("--device-only", help="Only run device tests", action="store_true")
 
 parser.set_defaults(trezor_1=None, trezor_t=None, coldcard=None, coldcard_edge=None, keepkey=None, bitbox01=None, ledger=None, ledger_legacy=None, jade=None, bitbox02=None)
 
 args = parser.parse_args()
+
+if args.core_ipc_only:
+    args.core_ipc = True
 
 # Run tests
 success = True
@@ -89,6 +95,7 @@ if not args.device_only:
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPSBT))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestBase58))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestBIP32))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestDefaultSocketPath))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestColdcardFirmware))
     if sys.platform.startswith("linux"):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestUdevRulesInstaller))
@@ -120,28 +127,72 @@ else:
     args.bitbox02 = False if args.bitbox02 is None else args.bitbox02
 
 if args.trezor_1 or args.trezor_t or args.coldcard or args.coldcard_edge or args.ledger or args.ledger_legacy or args.keepkey or args.bitbox01 or args.jade or args.bitbox02:
-    # Start bitcoind
-    bitcoind = Bitcoind.create(args.bitcoind)
+    # The Core IPC signer test starts its own bitcoin-node, so with
+    # --core-ipc-only the shared bitcoind and the regular device test
+    # suites are skipped.
+    if not args.core_ipc_only:
+        # Start bitcoind
+        bitcoind = Bitcoind.create(args.bitcoind)
 
-    if success and args.bitbox01:
-        success &= digitalbitbox_test_suite(args.bitbox01_path, bitcoind, args.interface)
-    if success and args.coldcard:
-        success &= coldcard_test_suite(args.coldcard_path, bitcoind, args.interface)
-    if success and args.coldcard_edge:
-        success &= coldcard_test_suite(args.coldcard_edge_path, bitcoind, args.interface, is_edge=True)
-    if success and args.trezor_1:
-        success &= trezor_test_suite(args.trezor_1_path, bitcoind, args.interface, '1')
-    if success and args.trezor_t:
-        success &= trezor_test_suite(args.trezor_t_path, bitcoind, args.interface, 't')
-    if success and args.keepkey:
-        success &= keepkey_test_suite(args.keepkey_path, bitcoind, args.interface)
-    if success and args.ledger:
-        success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, False)
-    if success and args.ledger_legacy:
-        success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, True)
-    if success and args.jade:
-        success &= jade_test_suite(args.jade_path, bitcoind, args.interface)
-    if success and args.bitbox02:
-        success &= bitbox02_test_suite(args.bitbox02_path, bitcoind, args.interface)
+        if success and args.bitbox01:
+            success &= digitalbitbox_test_suite(args.bitbox01_path, bitcoind, args.interface)
+        if success and args.coldcard:
+            success &= coldcard_test_suite(args.coldcard_path, bitcoind, args.interface)
+        if success and args.coldcard_edge:
+            success &= coldcard_test_suite(args.coldcard_edge_path, bitcoind, args.interface, is_edge=True)
+        if success and args.trezor_1:
+            success &= trezor_test_suite(args.trezor_1_path, bitcoind, args.interface, '1')
+        if success and args.trezor_t:
+            success &= trezor_test_suite(args.trezor_t_path, bitcoind, args.interface, 't')
+        if success and args.keepkey:
+            success &= keepkey_test_suite(args.keepkey_path, bitcoind, args.interface)
+        if success and args.ledger:
+            success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, False)
+        if success and args.ledger_legacy:
+            success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, True)
+        if success and args.jade:
+            success &= jade_test_suite(args.jade_path, bitcoind, args.interface)
+        if success and args.bitbox02:
+            success &= bitbox02_test_suite(args.bitbox02_path, bitcoind, args.interface)
+
+    if success and args.core_ipc:
+        import os
+        from test_core_ipc import core_ipc_test_suite
+        from test_coldcard import ColdcardSimulator
+        from test_trezor import TrezorEmulator
+        from test_ledger import LedgerEmulator
+        from test_keepkey import KeepkeyEmulator
+        from test_jade import JadeEmulator
+        from test_bitbox02 import BitBox02Emulator
+        from test_digitalbitbox import BitBox01Emulator
+
+        bitcoin_node_path = os.path.join(os.path.dirname(args.bitcoind), 'bitcoin-node')
+
+        core_ipc_emulators = []
+        if args.bitbox01:
+            core_ipc_emulators.append(BitBox01Emulator(args.bitbox01_path))
+        if args.coldcard:
+            core_ipc_emulators.append(ColdcardSimulator(args.coldcard_path, is_edge=False))
+        if args.coldcard_edge:
+            core_ipc_emulators.append(ColdcardSimulator(args.coldcard_edge_path, is_edge=True))
+        if args.trezor_1:
+            core_ipc_emulators.append(TrezorEmulator(args.trezor_1_path, '1'))
+        if args.trezor_t:
+            core_ipc_emulators.append(TrezorEmulator(args.trezor_t_path, 't'))
+        if args.keepkey:
+            core_ipc_emulators.append(KeepkeyEmulator(args.keepkey_path))
+        if args.ledger:
+            core_ipc_emulators.append(LedgerEmulator(args.ledger_path, False))
+        if args.ledger_legacy:
+            core_ipc_emulators.append(LedgerEmulator(args.ledger_path, True))
+        if args.jade:
+            core_ipc_emulators.append(JadeEmulator(args.jade_path))
+        if args.bitbox02:
+            core_ipc_emulators.append(BitBox02Emulator(args.bitbox02_path))
+
+        for emulator in core_ipc_emulators:
+            if not success:
+                break
+            success &= core_ipc_test_suite(emulator, bitcoin_node_path, args.interface)
 
 sys.exit(not success)

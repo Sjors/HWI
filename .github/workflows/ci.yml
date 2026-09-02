@@ -188,6 +188,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/build-bitcoind
+        with:
+          # The IPC signer test needs Bitcoin Core's external signer over IPC
+          # branch, which is not merged yet: bitcoin/bitcoin#TBD
+          repo-url: https://github.com/Sjors/bitcoin.git
+          branch: 2026/09/hwi-ipc
 
   test-trezor-1:
     uses: ./.github/workflows/device-test.yml
