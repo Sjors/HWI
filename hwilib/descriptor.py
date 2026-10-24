@@ -606,6 +606,8 @@ def parse_pubkey(expr: str, key_expr_index: int) -> Tuple['PubkeyProvider', str,
     if comma_idx != -1:
         end = comma_idx
         next_expr = expr[end + 1:]
+        if not next_expr:
+            raise ValueError("Trailing comma after key expression")
     return PubkeyProvider.parse(expr[:end], key_expr_index), next_expr, (key_expr_index + 1)
 
 
