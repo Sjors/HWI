@@ -155,6 +155,8 @@ class PubkeyProvider(object):
         deriv_path = None
         ranged = False
 
+        if not s:
+            raise ValueError("Empty key expression")
         if s[0] == "[":
             end = s.index("]")
             origin = KeyOriginInfo.from_string(s[1:end])
