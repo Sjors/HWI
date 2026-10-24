@@ -565,6 +565,8 @@ def _get_const(s: str, const: str) -> str:
     :return: The remainder of the string without the constant character
     :raises: ValueError: if the first character is not the constant character
     """
+    if not s:
+        raise ValueError(f"Expected '{const}' but reached the end")
     if s[0] != const:
         raise ValueError(f"Expected '{const}' but got '{s[0]}'")
     return s[1:]

@@ -359,6 +359,11 @@ class TestDescriptor(unittest.TestCase):
             "BIP 388 requires all multipath specifiers to be exactly 2 elements"
         )
 
+    def test_parse_incomplete_taproot_tree(self):
+        key = "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+        with self.assertRaisesRegex(ValueError, "Expected '}' but reached the end"):
+            parse_descriptor(f"tr({key},{{pk({key}),pk({key}))")
+
 
 if __name__ == "__main__":
     unittest.main()
