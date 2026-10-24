@@ -117,6 +117,23 @@ def AddChecksum(desc: str) -> str:
     return desc + "#" + DescriptorChecksum(desc)
 
 
+def _parse_ranged_deriv_path(path_str: str) -> Tuple[Optional[List[List[int]]], bool]:
+    """
+    :meta private:
+
+    Parse a derivation path suffix that may end with a ``/*`` range marker.
+
+    :param path_str: The derivation path, without the leading ``/`` that separates it from the key
+    :return: The multipath derivation path, or ``None`` if there is none, and whether the path is ranged
+    :raises: ValueError: if the derivation path is malformed
+    """
+    ranged = path_str.endswith("*")
+    if ranged:
+        path_str = path_str[:-2]
+    deriv_path = parse_multipath(path_str) if path_str else None
+    return deriv_path, ranged
+
+
 class PubkeyProvider(object):
     """
     A public key expression in a descriptor.
@@ -176,12 +193,7 @@ class PubkeyProvider(object):
         slash_idx = s.find("/")
         if slash_idx != -1:
             pubkey = s[:slash_idx]
-            path_str = s[slash_idx + 1:]
-            ranged = path_str.endswith("*")
-            if ranged:
-                path_str = path_str[:-2]
-            if len(path_str) > 0:
-                deriv_path = parse_multipath(path_str)
+            deriv_path, ranged = _parse_ranged_deriv_path(s[slash_idx + 1:])
 
         return cls(origin, pubkey, deriv_path, key_expr_index, ranged)
 
