@@ -869,6 +869,20 @@ def _parse_miniscript(
     return MiniscriptDescriptor(wrappers, name, args), key_expr_index
 
 
+def _parse_key_expr(expr: str, key_expr_index: int) -> Tuple['PubkeyProvider', int]:
+    """
+    :meta private:
+
+    Parse a single key expression and advance its index.
+
+    :param expr: The key expression to parse
+    :param key_expr_index: The position of the key within the descriptor
+    :return: The parsed :class:`PubkeyProvider` and the position of the next key expression
+    :raises: ValueError: if the key expression is malformed
+    """
+    return PubkeyProvider.parse(expr, key_expr_index), key_expr_index + 1
+
+
 def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index: int) -> Tuple['Descriptor', int]:
     """
     :meta private:
@@ -948,8 +962,7 @@ def _parse_descriptor(desc: str, ctx: '_ParseDescriptorContext', key_expr_index:
             raise ValueError("Can only have tr at top level")
         multipath_len = None
         internal_expr, expr = _get_expr(expr)
-        internal_key = PubkeyProvider.parse(internal_expr, key_expr_index)
-        key_expr_index += 1
+        internal_key, key_expr_index = _parse_key_expr(internal_expr, key_expr_index)
         if internal_key.multipath_len > 1:
             multipath_len = internal_key.multipath_len
         subscripts: List[Descriptor] = []
