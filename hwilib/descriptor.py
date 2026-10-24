@@ -345,16 +345,26 @@ class Descriptor(object):
 
         :return: List of pubkey expression strings
         """
-        out = [p for p in self.pubkeys]
-        for s in self.subdescriptors:
-            out.extend(s.get_pubkey_providers())
+        return self.get_derivation_providers()
+
+    def get_derivation_providers(self) -> list['PubkeyProvider']:
+        r"""
+        Get the key expressions contained in this descriptor whose derivation path suffixes
+        belong to the descriptor, in the same order that they appear in the descriptor
+        string, including keys that appear more than once.
+
+        :return: List of :class:`PubkeyProvider`\ s
+        """
+        out = list(self.pubkeys)
+        for subdescriptor in self.subdescriptors:
+            out.extend(subdescriptor.get_derivation_providers())
         return out
 
     def derive(self, pos: int, multipath_index: int = 0) -> 'Descriptor':
         """Select a multipath entry and address index from a ranged descriptor."""
 
         descriptor = deepcopy(self)
-        for pubkey in descriptor.get_pubkey_providers():
+        for pubkey in descriptor.get_derivation_providers():
             path = pubkey.get_deriv_path(pos, multipath_index)
             pubkey.deriv_path = [[step] for step in path] or None
             pubkey.ranged = False
