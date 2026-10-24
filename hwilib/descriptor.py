@@ -167,7 +167,12 @@ class PubkeyProvider(object):
             path_str = s[slash_idx + 1:]
             ranged = path_str.endswith("*")
             if ranged:
-                path_str = path_str[:-2]
+                if path_str == "*":
+                    path_str = ""
+                elif path_str.endswith("/*"):
+                    path_str = path_str[:-2]
+                else:
+                    raise ValueError(f"Invalid ranged derivation path: /{path_str}")
             if len(path_str) > 0:
                 deriv_path = parse_multipath(path_str)
 
