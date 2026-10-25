@@ -10,13 +10,16 @@ All curve operations here process public data; signing belongs on the device.
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from io import BytesIO
 import hashlib
+import logging
 import struct
-from typing import Dict, Optional
+from typing import Dict, Iterator, List, Optional, Set, Union
 
 from ._serialize import deser_compact_size, ser_string
-from .errors import BadArgumentError, DeviceFailureError
+from .errors import ActionCanceledError, BadArgumentError, DeviceBusyError, DeviceConnectionError, DeviceFailureError, HWWError, UnavailableActionError
 from .key import G, Point, n, p, point_add, point_mul
 from .psbt import PSBT
 from .tx import CTxOut
@@ -27,6 +30,78 @@ HOST_COMMITMENT = 0
 SIGNER_NONCE = 1
 HOST_ENTROPY = 2
 HOST_TAG = "BIP-EXFIL/host"
+
+
+_PRIVATE_LOGGING: ContextVar[bool] = ContextVar("hwi_anti_exfil_private_logging", default=False)
+
+
+class _PrivateOperationFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Context-local state preserves records from unrelated threads/tasks.
+        # QueueHandlers are filtered before private records enter their queues.
+        return not _PRIVATE_LOGGING.get()
+
+
+def _private_error(error: Exception) -> HWWError:
+    if isinstance(error, ActionCanceledError):
+        return ActionCanceledError("Anti-exfil signing canceled")
+    if isinstance(error, UnavailableActionError):
+        return UnavailableActionError("Anti-exfil signing is unavailable")
+    if isinstance(error, DeviceConnectionError):
+        return DeviceConnectionError("Anti-exfil device connection failed")
+    if isinstance(error, DeviceBusyError):
+        return DeviceBusyError("Anti-exfil device is busy")
+    if isinstance(error, BadArgumentError):
+        return BadArgumentError("Anti-exfil signer rejected the request")
+    return DeviceFailureError("Anti-exfil device operation failed")
+
+
+@contextmanager
+def private_operation(enabled: bool = True) -> Iterator[None]:
+    """Keep device diagnostics private in this protected signing context.
+
+    SDK errors and transport/device logs can contain the complete transcript.
+    Filter the currently configured loggers/handlers, including lastResort,
+    without changing logging levels or muting unrelated application threads.
+    Library callers can include client construction and close in this scope.
+    """
+    if not enabled:
+        yield
+        return
+    token = _PRIVATE_LOGGING.set(True)
+    private_filter = _PrivateOperationFilter()
+    loggers = [logging.getLogger()] + [
+        logger for logger in list(logging.Logger.manager.loggerDict.values())
+        if isinstance(logger, logging.Logger)
+    ]
+    targets: List[Union[logging.Logger, logging.Handler]] = list(loggers)
+    for logger in loggers:
+        targets.extend(logger.handlers)
+    if logging.lastResort is not None:
+        targets.append(logging.lastResort)
+    installed: List[Union[logging.Logger, logging.Handler]] = []
+    seen: Set[int] = set()
+    try:
+        for target in targets:
+            if id(target) in seen:
+                continue
+            seen.add(id(target))
+            target.addFilter(private_filter)
+            installed.append(target)
+        yield
+    except Exception as error:
+        # Suppress chained SDK errors too: --debug prints exception tracebacks.
+        raise _private_error(error) from None
+    finally:
+        for target in installed:
+            target.removeFilter(private_filter)
+        _PRIVATE_LOGGING.reset(token)
+
+
+def has_fields(psbt: PSBT) -> bool:
+    """Recognize explicit protection before opening a CLI device connection."""
+    mappings = [psbt.unknown] + [item.unknown for item in psbt.inputs] + [item.unknown for item in psbt.outputs]
+    return any(is_field(field) for mapping in mappings for field in mapping)
 
 
 def tagged_hash(tag: str, data: bytes) -> bytes:

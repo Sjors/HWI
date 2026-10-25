@@ -29,6 +29,17 @@ same entropy and device commitment on retries. Do not automatically retry an
 aborted exchange with fresh entropy. An ordinary ``signtx`` request without these
 fields retains its existing behavior.
 
+Protected signing suppresses SDK/device logs only in the active signing context
+and returns fixed device-error messages. Cancellation, unavailable-action and
+connection categories remain distinguishable. Logs from unrelated application
+threads keep their normal behavior. This also protects debug tracebacks from
+chained SDK errors containing the nonce transcript.
+
+Library callers that construct and close clients themselves can include that
+whole lifetime in ``hwilib.anti_exfil.private_operation()``. The ``signtx``
+command guards its device call; a surrounding scope also covers reconnect and
+close diagnostics from a previous signing round.
+
 The first firmware integration uses the Ledger Bitcoin app with its draft
 anti-exfil extension. Its round-1 nonce is transported with yield tag
 ``0xfffffffd``, followed by the input index, compressed nonce, and x-only key.

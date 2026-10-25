@@ -207,10 +207,14 @@ def signtx(
         for registration in registrations or []
     }
     expected = anti_exfil.requests(tx)
-    if expected and not client.can_sign_anti_exfil():
-        raise UnavailableActionError("This device does not support interactive Taproot anti-exfil")
+    if expected:
+        with anti_exfil.private_operation():
+            supported = client.can_sign_anti_exfil()
+        if not supported:
+            raise UnavailableActionError("This device does not support interactive Taproot anti-exfil")
     original = copy.deepcopy(tx) if expected else tx
-    signed_tx = client.sign_tx(tx, registered_descriptors)
+    with anti_exfil.private_operation(bool(expected)):
+        signed_tx = client.sign_tx(tx, registered_descriptors)
     anti_exfil.check_response(original, signed_tx, expected)
     result = signed_tx.serialize()
     signed = result != psbt

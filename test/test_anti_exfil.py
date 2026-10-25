@@ -5,12 +5,17 @@
 
 import copy
 import json
+import io
+import logging
+import threading
+import traceback
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from hwilib import anti_exfil as ae
 from hwilib.commands import signtx
-from hwilib.errors import BadArgumentError, DeviceFailureError, UnavailableActionError
+from hwilib.errors import ActionCanceledError, BadArgumentError, DeviceBusyError, DeviceConnectionError, DeviceFailureError, UnavailableActionError
 from hwilib.key import G, n, point_mul, point_to_bytes
 from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
@@ -315,6 +320,128 @@ class TestAntiExfil(unittest.TestCase):
 
                 with self.assertRaisesRegex(DeviceFailureError, "unprotected signature"):
                     signtx(ReferenceClient(self.secret, extra_signature), first.serialize())
+
+    def test_private_device_diagnostics(self):
+        import cbor2
+        from hwilib.devices.jade import jade_exception
+        from hwilib.devices.jadepy.jade import JadeInterface, device_logger
+        from hwilib.devices.jadepy.jade_error import JadeError
+
+        request = self.round_two_request()
+        nonce = request.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)].hex()
+        payload = "PRIVATE_TRANSCRIPT " + nonce + " " + self.entropy.hex()
+
+        class ErrorClient(ReferenceClient):
+            @jade_exception
+            def sign_tx(self, psbt, registrations=None):
+                # Use the real SDK decoder's default-level device log path.
+                wire = cbor2.dumps({"log": ("E " + payload).encode()})
+                wire += cbor2.dumps({"id": "1", "result": None})
+                JadeInterface.read_cbor_message(io.BytesIO(wire))
+                raise JadeError(JadeError.INTERNAL_ERROR, payload, None)
+
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        old_handlers, old_level, old_propagate = device_logger.handlers[:], device_logger.level, device_logger.propagate
+        old_filters = device_logger.filters[:]
+        device_logger.handlers = [handler]
+        device_logger.setLevel(logging.WARNING)
+        device_logger.propagate = False
+        try:
+            with self.assertRaises(DeviceFailureError) as raised:
+                signtx(ErrorClient(self.secret), request.serialize())
+            trace = io.StringIO()
+            traceback.print_exception(type(raised.exception), raised.exception, raised.exception.__traceback__, file=trace)
+            for private in ("PRIVATE_TRANSCRIPT", nonce, self.entropy.hex()):
+                self.assertNotIn(private, str(raised.exception))
+                self.assertNotIn(private, trace.getvalue())
+                self.assertNotIn(private, output.getvalue())
+            self.assertTrue(raised.exception.__suppress_context__)
+            self.assertEqual(device_logger.filters, old_filters)
+            self.assertFalse(handler.filters)
+            device_logger.warning("logging restored")
+            self.assertIn("logging restored", output.getvalue())
+        finally:
+            device_logger.handlers, device_logger.propagate = old_handlers, old_propagate
+            device_logger.setLevel(old_level)
+
+    def test_private_logging_context(self):
+        logger = logging.getLogger("hwi.test.anti_exfil.logging")
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        old_handlers, old_level, old_propagate = logger.handlers[:], logger.level, logger.propagate
+        logger.handlers, logger.propagate = [handler], False
+        logger.setLevel(logging.WARNING)
+        try:
+            for fail in (False, True):
+                with self.subTest(failure=fail):
+                    failed = False
+                    try:
+                        with ae.private_operation():
+                            logger.error("PRIVATE_TRANSCRIPT")
+                            worker = threading.Thread(target=logger.warning, args=("unrelated application log",))
+                            worker.start()
+                            worker.join()
+                            # Nested signing scopes must not unmute the outer one.
+                            with ae.private_operation():
+                                logger.error("PRIVATE_TRANSCRIPT")
+                            logger.error("PRIVATE_TRANSCRIPT")
+                            if fail:
+                                raise RuntimeError("PRIVATE_TRANSCRIPT")
+                    except DeviceFailureError as error:
+                        failed = True
+                        self.assertTrue(fail)
+                        self.assertNotIn("PRIVATE_TRANSCRIPT", str(error))
+                    self.assertEqual(failed, fail)
+                    logger.warning("logging restored")
+                    self.assertNotIn("PRIVATE_TRANSCRIPT", output.getvalue())
+                    self.assertIn("unrelated application log", output.getvalue())
+                    self.assertIn("logging restored", output.getvalue())
+                    self.assertFalse(logger.filters)
+                    self.assertFalse(handler.filters)
+        finally:
+            logger.handlers, logger.propagate = old_handlers, old_propagate
+            logger.setLevel(old_level)
+
+    def test_private_last_resort_logging(self):
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        name = "hwi.test.anti_exfil.last_resort"
+        while name in logging.Logger.manager.loggerDict:
+            name += ".new"
+        with patch.object(logging, "lastResort", handler):
+            with ae.private_operation():
+                # A newly imported SDK logger has no logger-level filter yet.
+                logger = logging.getLogger(name)
+                logger.propagate = False
+                logger.error("PRIVATE_TRANSCRIPT")
+            logger.error("logging restored")
+            self.assertNotIn("PRIVATE_TRANSCRIPT", output.getvalue())
+            self.assertIn("logging restored", output.getvalue())
+            self.assertFalse(handler.filters)
+            logger.propagate = True
+
+    def test_private_error_categories(self):
+        for category in (ActionCanceledError, UnavailableActionError, DeviceConnectionError, DeviceBusyError, BadArgumentError):
+            class ErrorClient(ReferenceClient):
+                def sign_tx(self, psbt, registrations=None):
+                    raise category("PRIVATE_TRANSCRIPT")
+
+            with self.subTest(category=category.__name__):
+                with self.assertRaises(category) as raised:
+                    signtx(ErrorClient(self.secret), self.psbt.serialize())
+                self.assertNotIn("PRIVATE_TRANSCRIPT", str(raised.exception))
+                self.assertEqual(raised.exception.get_code(), category("").get_code())
+
+    def test_ordinary_device_diagnostics(self):
+        class ErrorClient(ReferenceClient):
+            def sign_tx(self, psbt, registrations=None):
+                raise RuntimeError("ordinary SDK diagnostic")
+
+        ordinary = copy.deepcopy(self.psbt)
+        ordinary.inputs[0].unknown.clear()
+        with self.assertRaisesRegex(RuntimeError, "ordinary SDK diagnostic"):
+            signtx(ErrorClient(self.secret), ordinary.serialize())
 
     def test_ledger_nonce_yield(self):
         nonce = signer_commit(self.secret, bytes(32), ae.host_commit(self.entropy))
