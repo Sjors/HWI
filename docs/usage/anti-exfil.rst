@@ -69,3 +69,10 @@ Coldcard Edge carries the fields through its existing PSBT upload protocol and
 requires the matching native ``libngu`` extension. Ordinary Coldcard firmware,
 BitBox01, KeepKey, and the legacy Ledger app reject protection requests before
 signing. Full device suites include this unsupported-device check.
+
+BitBox02's matching firmware and bundled SDK use an explicit invocation-wide
+round and dedicated per-input Taproot fields in the streaming transaction API.
+The driver and raw SDK require the advertised capability and do not reuse the
+ECDSA anti-klepto channel for Schnorr. ``--bitbox02 --anti-exfil`` selects its
+interactive suite. Released firmware is tested to reject the request before
+starting a signing exchange.

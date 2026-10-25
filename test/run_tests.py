@@ -86,9 +86,9 @@ parser.set_defaults(trezor_1=None, trezor_t=None, coldcard=None, coldcard_edge=N
 
 args = parser.parse_args()
 if args.anti_exfil:
-    if not (args.trezor_1 or args.trezor_t or args.ledger or args.jade or args.coldcard_edge):
+    if not (args.trezor_1 or args.trezor_t or args.ledger or args.jade or args.coldcard_edge or args.bitbox02):
         parser.error("--anti-exfil requires a supported device selection")
-    if args.all or args.coldcard or args.keepkey or args.bitbox01 or args.bitbox02 or args.ledger_legacy:
+    if args.all or args.coldcard or args.keepkey or args.bitbox01 or args.ledger_legacy:
         parser.error("--anti-exfil was requested for a device without an interactive test suite")
     args.device_only = True
 if args.ledger_anti_exfil_core:
@@ -161,6 +161,6 @@ if args.trezor_1 or args.trezor_t or args.coldcard or args.coldcard_edge or args
     if success and args.jade:
         success &= jade_test_suite(args.jade_path, bitcoind, args.interface, anti_exfil=args.anti_exfil)
     if success and args.bitbox02:
-        success &= bitbox02_test_suite(args.bitbox02_path, bitcoind, args.interface)
+        success &= bitbox02_test_suite(args.bitbox02_path, bitcoind, args.interface, anti_exfil=args.anti_exfil)
 
 sys.exit(not success)
