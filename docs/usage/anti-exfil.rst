@@ -61,3 +61,11 @@ Run either matching emulator's interactive suite using ``--anti-exfil`` with
 ``--trezor-1`` or ``--trezor-t`` and its corresponding path option. Run the
 ordinary device suite separately without ``--anti-exfil``; it checks ordinary
 signing as well as rejection on devices without the capability.
+
+The same ``--anti-exfil`` option selects the Jade or Coldcard Edge interactive
+suite with ``--jade`` or ``--coldcard-edge`` and its corresponding path option.
+Jade uses its native PSBT command and advertises ``JADE_TAPROOT_ANTI_EXFIL``.
+Coldcard Edge carries the fields through its existing PSBT upload protocol and
+requires the matching native ``libngu`` extension. Ordinary Coldcard firmware,
+BitBox01, KeepKey, and the legacy Ledger app reject protection requests before
+signing. Full device suites include this unsupported-device check.
