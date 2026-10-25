@@ -244,6 +244,78 @@ class TestAntiExfil(unittest.TestCase):
         flipped = bytes([nonce[0] ^ 1]) + nonce[1:]
         self.assertFalse(ae.host_verify(self.pubkey, msg, signature, self.entropy, flipped))
 
+    def multiple_input_request(self, version):
+        request = copy.deepcopy(self.psbt)
+        request.tx.vin.append(CTxIn(COutPoint(2, 0), nSequence=0xfffffffd))
+        request.tx.vout[0].nValue = 190000
+        request.inputs.append(PartiallySignedInput(0))
+        request.cache_unsigned_tx_pieces()
+        request.inputs[1].witness_utxo = CTxOut(100000, b"\x51\x20" + self.pubkey)
+        entropies = [(5 + index).to_bytes(32, "big") for index in range(2)]
+        for index, entropy in enumerate(entropies):
+            request.inputs[index].unknown[ae.key(ae.HOST_COMMITMENT, self.pubkey)] = ae.host_commit(entropy)
+        if version == 2:
+            request.convert_to_v2()
+        return request, entropies
+
+    def test_multiple_input_receipts(self):
+        for version in (0, 2):
+            with self.subTest(version=version):
+                request, entropies = self.multiple_input_request(version)
+                first_result = signtx(ReferenceClient(self.secret), request.serialize())
+                self.assertFalse(first_result["signed"])
+                first = PSBT()
+                first.deserialize(first_result["psbt"])
+                for index, entropy in enumerate(entropies):
+                    first.inputs[index].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = entropy
+                nonce_field = ae.key(ae.SIGNER_NONCE, self.pubkey)
+                self.assertNotEqual(first.inputs[0].unknown[nonce_field], first.inputs[1].unknown[nonce_field])
+                response = signtx(ReferenceClient(self.secret), first.serialize())
+                self.assertTrue(response["signed"])
+                signed = PSBT()
+                signed.deserialize(response["psbt"])
+                self.assertTrue(all(len(psbt_in.tap_key_sig) == 64 for psbt_in in signed.inputs))
+
+                def wrong_second_nonce(result):
+                    result.inputs[1].unknown[nonce_field] = point_to_bytes(point_mul(G, 7))
+
+                def bad_second_signature(result):
+                    signature = result.inputs[1].tap_key_sig
+                    result.inputs[1].tap_key_sig = signature[:-1] + bytes([signature[-1] ^ 1])
+
+                def swap_nonces(result):
+                    result.inputs[0].unknown[nonce_field], result.inputs[1].unknown[nonce_field] = result.inputs[1].unknown[nonce_field], result.inputs[0].unknown[nonce_field]
+
+                def changed_second_utxo(result):
+                    result.inputs[1].witness_utxo.nValue -= 1
+
+                for mutation in (wrong_second_nonce, bad_second_signature, swap_nonces, changed_second_utxo):
+                    with self.subTest(mutation=mutation.__name__):
+                        with self.assertRaises(DeviceFailureError):
+                            signtx(ReferenceClient(self.secret, mutation), first.serialize())
+
+    def test_partial_input_targeting(self):
+        for version in (0, 2):
+            with self.subTest(version=version):
+                request, entropies = self.multiple_input_request(version)
+                request.inputs[1].unknown.clear()
+                first_result = signtx(ReferenceClient(self.secret), request.serialize())
+                first = PSBT()
+                first.deserialize(first_result["psbt"])
+                first.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = entropies[0]
+                response = signtx(ReferenceClient(self.secret), first.serialize())
+                signed = PSBT()
+                signed.deserialize(response["psbt"])
+                self.assertTrue(signed.inputs[0].tap_key_sig)
+                self.assertFalse(signed.inputs[1].tap_key_sig)
+
+                def extra_signature(result):
+                    message = ae.signature_hash(result, 1, 0)
+                    result.inputs[1].tap_key_sig = sign(self.secret, message, (7).to_bytes(32, "big"))
+
+                with self.assertRaisesRegex(DeviceFailureError, "unprotected signature"):
+                    signtx(ReferenceClient(self.secret, extra_signature), first.serialize())
+
     def test_ledger_nonce_yield(self):
         nonce = signer_commit(self.secret, bytes(32), ae.host_commit(self.entropy))
         encoded = b"\xfe\xfd\xff\xff\xff\x03" + nonce + self.pubkey
