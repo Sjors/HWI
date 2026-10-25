@@ -114,6 +114,18 @@ class TestAntiExfil(unittest.TestCase):
         with self.assertRaises(UnavailableActionError):
             signtx(UnsupportedClient(self.secret), self.psbt.serialize())
 
+    def test_bitbox02_capability_wire_field(self):
+        from hwilib.devices.bitbox02_lib.communication.generated import bitbox02_system_pb2
+
+        # Upstream uses field 8 for its password-stretching string. Neither that
+        # field nor the earlier draft's bool at field 8 advertises field 10.
+        for wire in (b"\x42\x04test", b"\x40\x01"):
+            with self.subTest(wire=wire):
+                response = bitbox02_system_pb2.DeviceInfoResponse.FromString(wire)
+                self.assertFalse(response.taproot_anti_exfil)
+        response = bitbox02_system_pb2.DeviceInfoResponse.FromString(b"\x42\x04test\x50\x01")
+        self.assertTrue(response.taproot_anti_exfil)
+
     def test_shared_vectors(self):
         vectors = json.loads((Path(__file__).parent / "data/anti_exfil_vectors.json").read_text())
         for vector in vectors:
