@@ -925,7 +925,9 @@ class TestRegisterDescriptor(DeviceTestCase):
 
         descriptors = []
         registrations = []
-        for account in range(2):
+        # Account 0 is registered by test_register_descriptor. Some devices
+        # reject registering that same policy again under a different name.
+        for account in (1, 2):
             descriptor, registration = self._register_descriptor(f"HWI_testing_{account}", account)
             descriptors.append(descriptor)
             registrations.append(registration)
