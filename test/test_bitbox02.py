@@ -39,7 +39,7 @@ class BitBox02Emulator(DeviceEmulator):
         self.supports_ms_display = False
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
-        self.supports_taproot = False
+        self.supports_taproot = True
         self.strict_bip48 = False
         self.include_xpubs = True
         self.supports_device_multiple_multisig = True
@@ -116,7 +116,8 @@ def bitbox02_test_suite(simulator, bitcoind, interface):
     dev_emulator = BitBox02Emulator(simulator)
 
     signtx_cases = [
-        (["segwit"], [], False, False)
+        (["segwit"], [], False, False),
+        (["tap"], [], False, False)
     ]
 
     # Generic Device tests

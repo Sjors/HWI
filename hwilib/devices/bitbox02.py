@@ -18,6 +18,7 @@ from typing import (
     TypeVar,
 )
 import base64
+import semver
 import builtins
 import sys
 import socket
@@ -1027,11 +1028,9 @@ class Bitbox02Client(HardwareWalletClient):
 
     def can_sign_taproot(self) -> bool:
         """
-        The BitBox02 does not support Taproot yet.
-
-        :returns: False, always
+        Taproot key-path signing is available in the supported firmware.
         """
-        return False
+        return self.init().version >= semver.VersionInfo(9, 24, 0)
 
     def _bip388_script_config(self, descriptor: Descriptor) -> bitbox02.btc.BTCScriptConfig:
         desc_keys = []
