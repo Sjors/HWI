@@ -81,7 +81,6 @@ class Bitcoind():
             s.close()
             return port
 
-        self.p2p_port = get_free_port()
         self.rpc_port = get_free_port()
 
         self.bitcoind_proc = subprocess.Popen(
@@ -92,7 +91,7 @@ class Bitcoind():
                 "-noprinttoconsole",
                 "-fallbackfee=0.0002",
                 "-keypool=1",
-                f"-port={self.p2p_port}",
+                "-listen=0",
                 f"-rpcport={self.rpc_port}"
             ] + self.extra_args
         )
