@@ -1,0 +1,233 @@
+#! /usr/bin/env python3
+# Copyright (c) 2026 The HWI developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+import copy
+import json
+from pathlib import Path
+import unittest
+
+from hwilib import anti_exfil as ae
+from hwilib.commands import signtx
+from hwilib.errors import BadArgumentError, DeviceFailureError
+from hwilib.key import G, n, point_mul, point_to_bytes
+from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
+from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
+
+
+def signer_nonce(secret, msg, commitment):
+    """Independent test-only reference signer. Never use for real keys."""
+    point = point_mul(G, secret)
+    if point[1] & 1:
+        secret = n - secret
+    aux = ae.tagged_hash("BIP0340/aux", commitment)
+    masked = bytes(a ^ b for a, b in zip(secret.to_bytes(32, "big"), aux))
+    nonce = int.from_bytes(ae.tagged_hash("BIP-EXFIL/nonce", masked + point[0].to_bytes(32, "big") + msg), "big") % n
+    if nonce == 0:
+        raise ValueError("Zero reference nonce")
+    return secret, nonce, point[0].to_bytes(32, "big")
+
+
+def signer_commit(secret, msg, commitment):
+    _, nonce, _ = signer_nonce(secret, msg, commitment)
+    return point_to_bytes(point_mul(G, nonce))
+
+
+def sign(secret, msg, entropy):
+    secret, nonce, pubkey = signer_nonce(secret, msg, ae.host_commit(entropy))
+    nonce = (nonce + int.from_bytes(entropy, "big")) % n
+    if nonce == 0:
+        raise ValueError("Zero final nonce")
+    point = point_mul(G, nonce)
+    if point[1] & 1:
+        nonce = n - nonce
+    r = point[0].to_bytes(32, "big")
+    challenge = int.from_bytes(ae.tagged_hash("BIP0340/challenge", r + pubkey + msg), "big") % n
+    return r + ((nonce + challenge * secret) % n).to_bytes(32, "big")
+
+
+class ReferenceClient:
+    def __init__(self, secret, mutate=None):
+        self.secret = secret
+        self.mutate = mutate
+
+    def sign_tx(self, psbt, registrations=None):
+        result = copy.deepcopy(psbt)
+        for index, request in ae.requests(psbt).items():
+            result.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, request.pubkey)] = signer_commit(self.secret, request.message, request.commitment)
+            if request.entropy is not None:
+                signature = sign(self.secret, request.message, request.entropy)
+                result.inputs[index].tap_key_sig = signature + (bytes([request.hash_type]) if request.hash_type else b"")
+        if self.mutate:
+            self.mutate(result)
+        return result
+
+
+class TestAntiExfil(unittest.TestCase):
+    def setUp(self):
+        self.secret = 3
+        self.pubkey = point_mul(G, self.secret)[0].to_bytes(32, "big")
+        self.entropy = (5).to_bytes(32, "big")
+        tx = CTransaction()
+        tx.nVersion = 2
+        tx.vin = [CTxIn(COutPoint(1, 0), nSequence=0xfffffffd)]
+        tx.vout = [CTxOut(90000, b"\x51\x20" + self.pubkey)]
+        self.psbt = PSBT(tx)
+        self.psbt.inputs = [PartiallySignedInput(0)]
+        self.psbt.outputs = [PartiallySignedOutput(0)]
+        self.psbt.cache_unsigned_tx_pieces()
+        self.psbt.inputs[0].witness_utxo = CTxOut(100000, b"\x51\x20" + self.pubkey)
+        self.psbt.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, self.pubkey)] = ae.host_commit(self.entropy)
+
+    def round_one(self):
+        response = signtx(ReferenceClient(self.secret), self.psbt.serialize())
+        self.assertFalse(response["signed"])
+        result = PSBT()
+        result.deserialize(response["psbt"])
+        return result
+
+    def round_two_request(self):
+        result = self.round_one()
+        result.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = self.entropy
+        return result
+
+    def test_shared_vectors(self):
+        vectors = json.loads((Path(__file__).parent / "data/anti_exfil_vectors.json").read_text())
+        for vector in vectors:
+            with self.subTest(index=vector["index"]):
+                secret = int(vector["secret_key"], 16)
+                message = bytes.fromhex(vector["message"])
+                entropy = bytes.fromhex(vector["host_nonce"])
+                commitment = bytes.fromhex(vector["host_commitment"])
+                nonce = bytes.fromhex(vector["signer_nonce"])
+                signature = bytes.fromhex(vector["signature"])
+                self.assertEqual(ae.host_commit(entropy), commitment)
+                self.assertEqual(signer_commit(secret, message, commitment), nonce)
+                self.assertEqual(sign(secret, message, entropy), signature)
+                self.assertTrue(ae.host_verify(bytes.fromhex(vector["public_key"]), message, signature, entropy, nonce))
+
+    def test_interactive_roundtrip(self):
+        for version in (0, 2):
+            for hash_type in (None, 1):
+                with self.subTest(version=version, hash_type=hash_type):
+                    request = copy.deepcopy(self.psbt)
+                    if version == 2:
+                        request.convert_to_v2()
+                    request.inputs[0].sighash = hash_type
+                    first = ReferenceClient(self.secret).sign_tx(request)
+                    ae.check_response(request, first, ae.requests(request))
+                    self.assertFalse(first.inputs[0].tap_key_sig)
+                    first.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = self.entropy
+                    response = signtx(ReferenceClient(self.secret), first.serialize())
+                    result = PSBT()
+                    result.deserialize(response["psbt"])
+                    self.assertEqual(result.get_unsigned_tx().serialize_without_witness(), request.get_unsigned_tx().serialize_without_witness())
+                    self.assertTrue(ae.verify_signature(self.pubkey, ae.signature_hash(request, 0, hash_type or 0), result.inputs[0].tap_key_sig[:64]))
+
+    def test_missing_or_early_response(self):
+        def remove_nonce(result):
+            result.inputs[0].unknown.pop(ae.key(ae.SIGNER_NONCE, self.pubkey))
+
+        def add_signature(result):
+            result.inputs[0].tap_key_sig = bytes(64)
+        for mutation in (remove_nonce, add_signature):
+            with self.assertRaises(DeviceFailureError):
+                signtx(ReferenceClient(self.secret, mutation), self.psbt.serialize())
+
+    def test_changed_transaction(self):
+        def change_sequence(result):
+            result.tx.vin[0].nSequence ^= 1
+        with self.assertRaisesRegex(DeviceFailureError, "changed the transaction"):
+            signtx(ReferenceClient(self.secret, change_sequence), self.psbt.serialize())
+
+    def test_commitment_and_nonce_mismatch(self):
+        request = self.round_two_request()
+        bad = copy.deepcopy(request)
+        bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = (6).to_bytes(32, "big")
+        with self.assertRaises(BadArgumentError):
+            ae.requests(bad)
+        bad = copy.deepcopy(request)
+        bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)] = point_to_bytes(point_mul(G, 7))
+        with self.assertRaisesRegex(DeviceFailureError, "changed its nonce"):
+            signtx(ReferenceClient(self.secret), bad.serialize())
+
+    def test_invalid_signature_or_ignored_entropy(self):
+        request = self.round_two_request()
+
+        def corrupt_signature(result):
+            signature = bytearray(result.inputs[0].tap_key_sig)
+            signature[40] ^= 1
+            result.inputs[0].tap_key_sig = bytes(signature)
+
+        def wrong_entropy(result):
+            result.inputs[0].tap_key_sig = sign(self.secret, ae.signature_hash(request, 0, 0), (6).to_bytes(32, "big"))
+        for mutation in (corrupt_signature, wrong_entropy):
+            with self.assertRaisesRegex(DeviceFailureError, "verification failed"):
+                signtx(ReferenceClient(self.secret, mutation), request.serialize())
+
+    def test_unprotected_extra_signature(self):
+        request = self.round_two_request()
+
+        def add_unprotected(result):
+            result.inputs[0].tap_script_sigs[(self.pubkey, bytes(32))] = bytes(64)
+
+        with self.assertRaisesRegex(DeviceFailureError, "unprotected signature"):
+            signtx(ReferenceClient(self.secret, add_unprotected), request.serialize())
+
+    def test_malformed_requests(self):
+        cases = []
+        bad = copy.deepcopy(self.psbt)
+        bad.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, self.pubkey)] = bytes(31)
+        cases.append(bad)
+        bad = copy.deepcopy(self.psbt)
+        bad.inputs[0].sighash = 0x81
+        cases.append(bad)
+        bad = copy.deepcopy(self.psbt)
+        bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)] = b"\x02" + bytes([0xff]) * 32
+        cases.append(bad)
+        bad = copy.deepcopy(self.psbt)
+        bad.inputs[0].unknown[ae.PREFIX + b"\x03" + self.pubkey] = bytes(32)
+        cases.append(bad)
+        for case in cases:
+            with self.assertRaises(BadArgumentError):
+                ae.requests(case)
+        for entropy in (bytes(32), n.to_bytes(32, "big"), bytes(31)):
+            with self.assertRaises(ValueError):
+                ae.host_commit(entropy)
+
+    def test_field_location_and_encoding(self):
+        field = ae.key(ae.HOST_COMMITMENT, self.pubkey)
+        for output_map in (False, True):
+            bad = copy.deepcopy(self.psbt)
+            mapping = bad.outputs[0].unknown if output_map else bad.unknown
+            mapping[field] = ae.host_commit(self.entropy)
+            with self.assertRaisesRegex(BadArgumentError, "only allowed in PSBT input"):
+                ae.requests(bad)
+        for malformed in (b"\xfc\xfd\x02\x00ae\x00" + self.pubkey, b"\xfd\xfc\x00\x02ae\x00" + self.pubkey):
+            bad = copy.deepcopy(self.psbt)
+            bad.inputs[0].unknown = {malformed: ae.host_commit(self.entropy)}
+            with self.assertRaisesRegex(BadArgumentError, "Malformed"):
+                ae.requests(bad)
+
+        def outside_input(result):
+            result.unknown[field] = ae.host_commit(self.entropy)
+
+        with self.assertRaisesRegex(DeviceFailureError, "outside its input map"):
+            signtx(ReferenceClient(self.secret, outside_input), self.psbt.serialize())
+
+    def test_nonce_sign_and_infinity(self):
+        nonce = point_to_bytes(point_mul(G, n - 5))
+        self.assertFalse(ae.host_verify(self.pubkey, bytes(32), bytes(64), self.entropy, nonce))
+        request = self.round_two_request()
+        response = ReferenceClient(self.secret).sign_tx(request)
+        signature = response.inputs[0].tap_key_sig
+        msg = ae.signature_hash(request, 0, 0)
+        nonce = request.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)]
+        self.assertTrue(ae.host_verify(self.pubkey, msg, signature, self.entropy, nonce))
+        flipped = bytes([nonce[0] ^ 1]) + nonce[1:]
+        self.assertFalse(ae.host_verify(self.pubkey, msg, signature, self.entropy, flipped))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -18,6 +18,7 @@ Many exceptions are buried within the functions implemented by each device's :cl
 For more information about the exceptions that those can raise, please see the specific client documentation.
 """
 
+import copy
 import importlib
 import logging
 import platform
@@ -56,6 +57,7 @@ from .common import (
 )
 from .hwwclient import HardwareWalletClient
 from .psbt import PSBT
+from . import anti_exfil
 
 from itertools import count
 from typing import (
@@ -204,8 +206,15 @@ def signtx(
         RegisteredDescriptor.deserialize(registration)
         for registration in registrations or []
     }
-    result = client.sign_tx(tx, registered_descriptors).serialize()
-    return {"psbt": result, "signed": result != psbt}
+    expected = anti_exfil.requests(tx)
+    original = copy.deepcopy(tx) if expected else tx
+    signed_tx = client.sign_tx(tx, registered_descriptors)
+    anti_exfil.check_response(original, signed_tx, expected)
+    result = signed_tx.serialize()
+    signed = result != psbt
+    if expected and next(iter(expected.values())).entropy is None:
+        signed = False  # A nonce commitment is not a signature.
+    return {"psbt": result, "signed": signed}
 
 def getxpub(client: HardwareWalletClient, path: str, expert: bool = False) -> Dict[str, Any]:
     """

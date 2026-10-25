@@ -4,6 +4,7 @@ import argparse
 import sys
 import unittest
 
+from test_anti_exfil import TestAntiExfil
 from test_base58 import TestBase58
 from test_bech32 import TestSegwitAddress
 from test_bip32 import TestBIP32
@@ -84,6 +85,7 @@ args = parser.parse_args()
 success = True
 suite = unittest.TestSuite()
 if not args.device_only:
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestAntiExfil))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestDescriptor))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestSegwitAddress))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPSBT))
