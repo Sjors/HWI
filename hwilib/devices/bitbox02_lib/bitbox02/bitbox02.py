@@ -458,6 +458,8 @@ class BitBox02(BitBoxCommonAPI):
 
         ae_round = 0
         if taproot_anti_exfil:
+            if not self.device_info().get("taproot_anti_exfil"):
+                raise ValueError("Firmware does not support Taproot anti-exfil")
             rounds = {2 if ae.host_entropy else 1 for ae in taproot_anti_exfil.values()}
             if len(rounds) != 1 or set(taproot_anti_exfil) != set(range(len(inputs))):
                 raise ValueError("Taproot anti-exfil requires one round for every input")
@@ -506,7 +508,7 @@ class BitBox02(BitBoxCommonAPI):
                 # The ECDSA anti-klepto channel remains unchanged.
                 input_is_schnorr = is_taproot(script_configs[tx_input["script_config_index"]])
                 perform_antiklepto = (
-                    supports_antiklepto and is_inputs_pass2 and not input_is_schnorr
+                    supports_antiklepto and is_inputs_pass2 and not input_is_schnorr and ae is None
                 )
 
                 if perform_antiklepto:

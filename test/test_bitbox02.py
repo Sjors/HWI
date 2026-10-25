@@ -213,7 +213,7 @@ class TestBitBox02AntiExfil(DeviceTestCase):
                 # Intercept a valid transport request after HWI's PSBT preflight.
                 # Thus malformed entropy/nonces/rounds are rejected by actual
                 # firmware rather than by the host parser.
-                for mutation in ("entropy", "nonce", "missing-request", "round", "sighash", "keypath"):
+                for mutation in ("entropy", "nonce", "missing-request", "round", "sighash", "keypath", "early-request"):
                     client = get_client("bitbox02", self.emulator.path, chain=Chain.TEST)
                     try:
                         sdk = client.init()
@@ -222,6 +222,9 @@ class TestBitBox02AntiExfil(DeviceTestCase):
                         def corrupt(request, *args, **kwargs):
                             if request.HasField("btc_sign_init") and mutation == "round":
                                 request.btc_sign_init.taproot_anti_exfil_round = 1
+                            if request.HasField("btc_sign_input") and mutation == "early-request":
+                                if not request.btc_sign_input.HasField("taproot_anti_exfil"):
+                                    request.btc_sign_input.taproot_anti_exfil.host_commitment = bytes(32)
                             if request.HasField("btc_sign_input") and request.btc_sign_input.HasField("taproot_anti_exfil"):
                                 tx_input = request.btc_sign_input
                                 if mutation == "entropy":
