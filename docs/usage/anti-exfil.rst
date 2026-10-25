@@ -51,3 +51,13 @@ with ``-signerantiexfil`` support. The test starts an independent node with that
 setting enabled, creates an external-signer wallet, exercises
 ``walletprocesspsbt`` and ``send``, checks transcript removal, and confirms the
 broadcast transaction.
+
+Trezor One and T firmware with the provisional ``BitcoinAntiExfil`` capability
+uses the same PSBT transcript. The bridge carries it in optional Bitcoin input
+fields and returns commitment receipts separately from signatures. The bridge
+rejects protection requests before signing when firmware lacks that capability.
+
+Run either matching emulator's interactive suite using ``--anti-exfil`` with
+``--trezor-1`` or ``--trezor-t`` and its corresponding path option. Run the
+ordinary device suite separately without ``--anti-exfil``; it checks ordinary
+signing as well as rejection on devices without the capability.

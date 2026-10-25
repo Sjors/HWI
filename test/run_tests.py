@@ -13,6 +13,7 @@ from test_descriptor import TestDescriptor
 from test_device import Bitcoind
 from test_psbt import TestPSBT
 from test_trezor import trezor_test_suite
+from test_trezor_anti_exfil_transport import TestTrezorAntiExfilTransport
 from test_ledger import ledger_test_suite
 from test_digitalbitbox import digitalbitbox_test_suite
 from test_keepkey import keepkey_test_suite
@@ -75,6 +76,7 @@ parser.add_argument('--all', help='Run tests on all existing simulators', defaul
 parser.add_argument('--bitcoind', help='Path to bitcoind', default='work/bitcoin/build/bin/bitcoind')
 parser.add_argument('--interface', help='Which interface to send commands over', choices=['library', 'cli', 'bindist', 'stdin'], default='library')
 
+parser.add_argument("--anti-exfil", help="Run only draft anti-exfil tests on selected supported devices (requires matching firmware)", action="store_true")
 parser.add_argument("--ledger-anti-exfil-core", help="Also test Core-managed anti-exfil (requires bitcoind with -signerantiexfil)", action="store_true")
 parser.add_argument("--ledger-anti-exfil", help="Run only draft Taproot anti-exfil Ledger tests (requires matching firmware)", action="store_true")
 
@@ -83,6 +85,12 @@ parser.add_argument("--device-only", help="Only run device tests", action="store
 parser.set_defaults(trezor_1=None, trezor_t=None, coldcard=None, coldcard_edge=None, keepkey=None, bitbox01=None, ledger=None, ledger_legacy=None, jade=None, bitbox02=None)
 
 args = parser.parse_args()
+if args.anti_exfil:
+    if not (args.trezor_1 or args.trezor_t or args.ledger):
+        parser.error("--anti-exfil requires a supported device selection")
+    if args.all or args.coldcard or args.coldcard_edge or args.keepkey or args.bitbox01 or args.bitbox02 or args.jade or args.ledger_legacy:
+        parser.error("--anti-exfil was requested for a device without an interactive test suite")
+    args.device_only = True
 if args.ledger_anti_exfil_core:
     args.ledger_anti_exfil = True
 if args.ledger_anti_exfil:
@@ -94,6 +102,7 @@ success = True
 suite = unittest.TestSuite()
 if not args.device_only:
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestAntiExfil))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestTrezorAntiExfilTransport))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestDescriptor))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestSegwitAddress))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPSBT))
@@ -140,13 +149,13 @@ if args.trezor_1 or args.trezor_t or args.coldcard or args.coldcard_edge or args
     if success and args.coldcard_edge:
         success &= coldcard_test_suite(args.coldcard_edge_path, bitcoind, args.interface, is_edge=True)
     if success and args.trezor_1:
-        success &= trezor_test_suite(args.trezor_1_path, bitcoind, args.interface, '1')
+        success &= trezor_test_suite(args.trezor_1_path, bitcoind, args.interface, '1', anti_exfil=args.anti_exfil)
     if success and args.trezor_t:
-        success &= trezor_test_suite(args.trezor_t_path, bitcoind, args.interface, 't')
+        success &= trezor_test_suite(args.trezor_t_path, bitcoind, args.interface, 't', anti_exfil=args.anti_exfil)
     if success and args.keepkey:
         success &= keepkey_test_suite(args.keepkey_path, bitcoind, args.interface)
     if success and args.ledger:
-        success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, False, anti_exfil=args.ledger_anti_exfil, anti_exfil_core=args.ledger_anti_exfil_core)
+        success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, False, anti_exfil=args.ledger_anti_exfil or args.anti_exfil, anti_exfil_core=args.ledger_anti_exfil_core)
     if success and args.ledger_legacy:
         success &= ledger_test_suite(args.ledger_path, bitcoind, args.interface, True)
     if success and args.jade:
