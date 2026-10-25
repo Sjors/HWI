@@ -1,6 +1,9 @@
 #! /usr/bin/env python3
 
 import argparse
+import copy
+from dataclasses import replace
+from unittest.mock import patch
 import atexit
 import json
 import os
@@ -15,6 +18,7 @@ import unittest
 from hwilib.devices.trezorlib.transport.udp import UdpTransport
 from hwilib.devices.trezorlib.debuglink import TrezorClientDebugLink, load_device_by_mnemonic
 from hwilib.devices.trezorlib import device, messages
+from hwilib.devices.trezorlib.exceptions import TrezorFailure
 from test_device import (
     Bitcoind,
     DeviceEmulator,
@@ -29,6 +33,11 @@ from test_device import (
 
 from hwilib._cli import process_commands
 from hwilib.devices.trezor import TrezorClient
+from hwilib import anti_exfil as ae
+from hwilib.commands import get_client
+from hwilib.common import Chain
+from hwilib.key import G, point_mul, point_to_bytes
+from hwilib.psbt import PSBT
 
 from types import MethodType
 
@@ -41,7 +50,7 @@ def get_pin(self, code=None):
         return self.debuglink.read_pin_encoded()
 
 class TrezorEmulator(DeviceEmulator):
-    def __init__(self, path, model):
+    def __init__(self, path, model, anti_exfil=False):
         assert model in TREZOR_MODELS
         self.emulator_path = path
         self.emulator_proc = None
@@ -60,6 +69,7 @@ class TrezorEmulator(DeviceEmulator):
         self.supports_xpub_ms_display = True
         self.supports_unsorted_ms = True
         self.supports_taproot = True
+        self.supports_anti_exfil = anti_exfil
         self.strict_bip48 = True
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
@@ -95,6 +105,7 @@ class TrezorEmulator(DeviceEmulator):
         client.init_device()
         device.wipe(client)
         load_device_by_mnemonic(client=client, mnemonic='alcohol woman abuse must during monitor noble actual mixed trade anger aisle', pin='', passphrase_protection=False, label='test') # From Trezor device tests
+        self.supports_anti_exfil = messages.Capability.BitcoinAntiExfil in client.features.capabilities
         atexit.register(self.stop)
         return client
 
@@ -421,12 +432,103 @@ class TestTrezorManCommands(TrezorTestCase):
         else:
             self.fail("Did not enumerate device")
 
-def trezor_test_suite(emulator, bitcoind, interface, model):
+class TestTrezorAntiExfil(DeviceTestCase):
+    """Opt-in tests requiring Trezor firmware built with the draft protocol."""
+
+    def setUp(self):
+        super().setUp()
+        self.setup_wallets()
+
+    def test_taproot_anti_exfil(self):
+        descriptors = self.do_command(self.dev_args + ["getkeypool", "--addr-type", "tap", "0", "5"])
+        self.assertIsInstance(descriptors, list, descriptors)
+        self.assertTrue(all(result["success"] for result in self.wrpc.importdescriptors(descriptors)))
+
+        for hash_type in (None, 1):
+            with self.subTest(sighash=hash_type):
+                address = self.wrpc.getnewaddress("", "bech32m")
+                txid = self.wpk_rpc.sendtoaddress(address, 1)
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                coins = [coin for coin in self.wrpc.listunspent() if coin["txid"] == txid]
+                self.assertEqual(len(coins), 1)
+                funded = self.wrpc.walletcreatefundedpsbt(
+                    [{"txid": txid, "vout": coins[0]["vout"]}],
+                    [{self.wpk_rpc.getnewaddress(): 0.5}], 0,
+                    {"add_inputs": False}, True,
+                )
+                request = PSBT()
+                request.deserialize(funded["psbt"])
+                self.assertEqual(len(request.inputs), 1)
+                request.inputs[0].sighash = hash_type
+                pubkey = ae.get_utxo(request, 0).scriptPubKey[2:]
+                entropy = (5 if hash_type is None else 6).to_bytes(32, "big")
+                request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit(entropy)
+                unsigned = request.get_unsigned_tx().serialize_without_witness()
+
+                first_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", first_result, first_result)
+                self.assertFalse(first_result["signed"])
+                first = PSBT()
+                first.deserialize(first_result["psbt"])
+                self.assertFalse(first.inputs[0].tap_key_sig)
+                nonce = first.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)]
+                self.assertEqual(len(nonce), 33)
+                self.assertEqual(first.get_unsigned_tx().serialize_without_witness(), unsigned)
+                # Reconnecting between subprocess calls does not lose the device's commitment.
+                retry_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", retry_result, retry_result)
+                retry = PSBT()
+                retry.deserialize(retry_result["psbt"])
+                self.assertEqual(retry.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)], nonce)
+                first.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkey)] = entropy
+
+                # Bypass HWI preflight here: the firmware itself must reject a wrong
+                # opening and a changed round-1 nonce rather than sign anyway.
+                for bad_entropy, bad_nonce in ((True, False), (False, True)):
+                    bad = copy.deepcopy(first)
+                    if bad_entropy:
+                        bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkey)] = (7).to_bytes(32, "big")
+                    if bad_nonce:
+                        bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)] = point_to_bytes(point_mul(G, 7))
+                    # Keep the host's valid preflight result, but change the
+                    # fields sent to the device to exercise firmware checks.
+                    valid = ae.requests(first)
+                    request_fields = valid[0]
+                    forged = replace(
+                        request_fields,
+                        entropy=bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkey)],
+                        signer_nonce=bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)],
+                    )
+                    client = get_client("trezor", self.emulator.path, chain=Chain.TEST)
+                    try:
+                        with patch.object(ae, "requests", return_value={0: forged}):
+                            with self.assertRaises(TrezorFailure):
+                                client.sign_tx(bad)
+                    finally:
+                        client.close()
+
+                signed_result = self.do_command(self.dev_args + ["signtx", first.serialize()])
+                self.assertNotIn("error", signed_result, signed_result)
+                signed = PSBT()
+                signed.deserialize(signed_result["psbt"])
+                self.assertEqual(signed.get_unsigned_tx().serialize_without_witness(), unsigned)
+                signature = signed.inputs[0].tap_key_sig
+                self.assertEqual(len(signature), 64 if hash_type is None else 65)
+                self.assertTrue(ae.host_verify(pubkey, ae.signature_hash(request, 0, hash_type or 0), signature[:64], entropy, nonce))
+                finalized = self.wrpc.finalizepsbt(signed.serialize())
+                self.assertTrue(finalized["complete"])
+                self.assertTrue(self.wrpc.testmempoolaccept([finalized["hex"]])[0]["allowed"])
+                sent = self.wrpc.sendrawtransaction(finalized["hex"])
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                self.assertGreater(self.wrpc.gettransaction(sent)["confirmations"], 0)
+
+
+def trezor_test_suite(emulator, bitcoind, interface, model, anti_exfil=False):
     assert model in TREZOR_MODELS
     # Redirect stderr to /dev/null as it's super spammy
     sys.stderr = open(os.devnull, 'w')
 
-    dev_emulator = TrezorEmulator(emulator, model)
+    dev_emulator = TrezorEmulator(emulator, model, anti_exfil)
 
     signtx_cases = [
         (["legacy"], ["legacy"], False, True),
@@ -438,6 +540,11 @@ def trezor_test_suite(emulator, bitcoind, interface, model):
 
     # Generic Device tests
     suite = unittest.TestSuite()
+    if anti_exfil:
+        suite.addTest(DeviceTestCase.parameterize(TestTrezorAntiExfil, bitcoind, emulator=dev_emulator, interface=interface))
+        result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
+        sys.stderr = sys.__stderr__
+        return result.wasSuccessful()
     suite.addTest(DeviceTestCase.parameterize(TestDeviceConnect, bitcoind, emulator=dev_emulator, interface=interface, detect_type="trezor"))
     suite.addTest(DeviceTestCase.parameterize(TestGetDescriptors, bitcoind, emulator=dev_emulator, interface=interface))
     suite.addTest(DeviceTestCase.parameterize(TestGetKeypool, bitcoind, emulator=dev_emulator, interface=interface))
