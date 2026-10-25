@@ -13,6 +13,7 @@ concurrency:
   group: ${{ github.event_name != 'pull_request' && github.run_id || github.ref }}
   cancel-in-progress: true
 
+# TEMPORARY ANTI-EXFIL: retain the tested GCC 12/13 simulator build host.
 env:
   LC_ALL: 'C.UTF-8'
   LANG: 'C.UTF-8'
@@ -21,7 +22,7 @@ env:
 jobs:
   non-device-tests:
     name: Non-device tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: python:3.12
     steps:
       - uses: actions/checkout@v7
@@ -36,7 +37,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: python:3.12
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +52,7 @@ jobs:
 
   wine-builder:
     name: Wine builder
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v7
@@ -75,7 +76,7 @@ jobs:
 
   dist-builder:
     name: Dist builder
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v7
@@ -114,7 +115,7 @@ jobs:
     with:
       sim: trezor
       include: ${{ needs.prepare-sim-matrices.outputs.trezor }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-coldcard:
     name: Coldcard sim builder
@@ -123,7 +124,7 @@ jobs:
     with:
       sim: coldcard
       include: ${{ needs.prepare-sim-matrices.outputs.coldcard }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-coldcard-edge:
     name: Coldcard Edge sim builder
@@ -132,7 +133,7 @@ jobs:
     with:
       sim: coldcard-edge
       include: ${{ needs.prepare-sim-matrices.outputs.coldcard_edge }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-bitbox:
     name: Bitbox sim builder
@@ -141,7 +142,7 @@ jobs:
     with:
       sim: bitbox
       include: ${{ needs.prepare-sim-matrices.outputs.bitbox }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-jade:
     name: Jade sim builder
@@ -150,7 +151,7 @@ jobs:
     with:
       sim: jade
       include: ${{ needs.prepare-sim-matrices.outputs.jade }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-ledger:
     name: Ledger sim builder
@@ -159,7 +160,7 @@ jobs:
     with:
       sim: ledger
       include: ${{ needs.prepare-sim-matrices.outputs.ledger }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   sim-builder-keepkey:
     name: Keepkey sim builder
@@ -168,23 +169,23 @@ jobs:
     with:
       sim: keepkey
       include: ${{ needs.prepare-sim-matrices.outputs.keepkey }}
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   ledger-legacy-app-builder:
     name: Ledger Bitcoin Legacy App builder
     uses: ./.github/workflows/ledger-legacy-app-builder.yml
     with:
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   ledger-app-builder:
     name: Ledger Bitcoin App builder
     uses: ./.github/workflows/ledger-app-builder.yml
     with:
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   bitcoind-builder:
     name: bitcoind builder
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/build-bitcoind
@@ -194,42 +195,42 @@ jobs:
     needs: [sim-builder-trezor, bitcoind-builder, dist-builder]
     with:
       device: trezor-1
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-trezor-t:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-trezor, bitcoind-builder, dist-builder]
     with:
       device: trezor-t
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-ledger-legacy:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-ledger, ledger-legacy-app-builder, bitcoind-builder, dist-builder]
     with:
       device: ledger-legacy
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-ledger:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-ledger, ledger-app-builder, bitcoind-builder, dist-builder]
     with:
       device: ledger
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-coldcard:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-coldcard, bitcoind-builder, dist-builder]
     with:
       device: coldcard
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-coldcard-edge:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-coldcard-edge, bitcoind-builder, dist-builder]
     with:
       device: coldcard-edge
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
       python_versions: '["3.14"]'
 
   test-bitbox01:
@@ -237,25 +238,25 @@ jobs:
     needs: [sim-builder-bitbox, bitcoind-builder, dist-builder]
     with:
       device: bitbox01
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-bitbox02:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-bitbox, bitcoind-builder, dist-builder]
     with:
       device: bitbox02
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-jade:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-jade, bitcoind-builder, dist-builder]
     with:
       device: jade
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
 
   test-keepkey:
     uses: ./.github/workflows/device-test.yml
     needs: [sim-builder-keepkey, bitcoind-builder, dist-builder]
     with:
       device: keepkey
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04

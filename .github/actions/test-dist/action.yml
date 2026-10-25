@@ -60,6 +60,24 @@ runs:
       run: |
         cd test; poetry run ./run_tests.py --${{ matrix.device }} --interface=bindist --device-only; cd ..
 
+    # TEMPORARY ANTI-EXFIL: execute against the companion firmware/Core forks.
+    - name: Test interactive anti-exfil
+      shell: bash
+      run: |
+        case "${{ matrix.device }}" in
+          ledger) anti_exfil_flags=(--ledger-anti-exfil-core) ;;
+          trezor-1|trezor-t|coldcard-edge|jade|bitbox02) anti_exfil_flags=(--anti-exfil) ;;
+          *) exit 0 ;;
+        esac
+        interface=cli
+        runner=(./run_tests.py)
+        if [[ "${{ matrix.test.script }}" == Bindist ]]; then
+          interface=bindist
+          runner=(poetry run ./run_tests.py)
+        fi
+        cd test
+        "${runner[@]}" --${{ matrix.device }} --device-only --interface=${interface} "${anti_exfil_flags[@]}"
+
     - if: failure()
       shell: bash
       run: |
