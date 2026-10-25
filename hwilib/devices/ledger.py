@@ -614,6 +614,11 @@ class LedgerClient(HardwareWalletClient):
         """
         raise UnavailableActionError('The Ledger Nano S and X do not support toggling passphrase from the host')
 
+    def can_sign_anti_exfil(self) -> bool:
+        # Matching experimental firmware is required. Stock firmware cannot
+        # satisfy the host's nonce and signature checks.
+        return isinstance(self.client, NewClient)
+
     @ledger_exception
     def can_sign_taproot(self) -> bool:
         """

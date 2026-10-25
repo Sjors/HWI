@@ -10,7 +10,7 @@ import unittest
 
 from hwilib import anti_exfil as ae
 from hwilib.commands import signtx
-from hwilib.errors import BadArgumentError, DeviceFailureError
+from hwilib.errors import BadArgumentError, DeviceFailureError, UnavailableActionError
 from hwilib.key import G, n, point_mul, point_to_bytes
 from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
@@ -54,6 +54,9 @@ class ReferenceClient:
         self.secret = secret
         self.mutate = mutate
 
+    def can_sign_anti_exfil(self):
+        return True
+
     def sign_tx(self, psbt, registrations=None):
         result = copy.deepcopy(psbt)
         for index, request in ae.requests(psbt).items():
@@ -93,6 +96,17 @@ class TestAntiExfil(unittest.TestCase):
         result = self.round_one()
         result.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = self.entropy
         return result
+
+    def test_unsupported_client_rejected_before_signing(self):
+        class UnsupportedClient(ReferenceClient):
+            def can_sign_anti_exfil(self):
+                return False
+
+            def sign_tx(self, *args, **kwargs):
+                raise AssertionError("Unsupported signer was invoked")
+
+        with self.assertRaises(UnavailableActionError):
+            signtx(UnsupportedClient(self.secret), self.psbt.serialize())
 
     def test_shared_vectors(self):
         vectors = json.loads((Path(__file__).parent / "data/anti_exfil_vectors.json").read_text())

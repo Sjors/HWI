@@ -251,6 +251,14 @@ class HardwareWalletClient(object):
         raise NotImplementedError("The HardwareWalletClient base class "
                                   "does not implement this method")
 
+    def can_sign_anti_exfil(self) -> bool:
+        """Whether this client implements the draft interactive Taproot protocol.
+
+        Firmware must still return a valid proof; this is not a substitute for
+        checking each response. Unsupported clients reject before signing.
+        """
+        return False
+
     def can_sign_taproot(self) -> bool:
         """
         Whether the device has a version that can sign for Taproot inputs

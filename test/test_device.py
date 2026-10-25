@@ -20,9 +20,13 @@ from hwilib._cli import process_commands
 from hwilib.descriptor import AddChecksum, parse_descriptor, PubkeyProvider, RegisteredDescriptor
 from hwilib.key import ExtendedKey, KeyOriginInfo
 from hwilib.psbt import PSBT
+from hwilib.tx import CTxOut
+from hwilib import anti_exfil as ae
 
 # Class for emulator control
 class DeviceEmulator():
+    supports_anti_exfil = False
+
     def __init__(self):
         self.type = None
         self.path = None
@@ -609,6 +613,25 @@ class TestSignTx(DeviceTestCase):
         self.wrpc.sendrawtransaction(final_tx)
 
     # Test wrapper to avoid mixed-inputs signing for Ledger
+    def test_anti_exfil_unsupported(self):
+        if self.emulator.supports_anti_exfil:
+            self.skipTest("Interactive signing is exercised by this device's anti-exfil tests")
+        # A well-formed request must be refused by unsupported drivers, even
+        # when they would otherwise ignore proprietary PSBT fields.
+        pubkey = bytes.fromhex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+        serialized = self.wrpc.createpsbt(
+            [{"txid": "00" * 32, "vout": 0}],
+            [{self.wpk_rpc.getnewaddress(): 0.5}],
+        )
+        request = PSBT()
+        request.deserialize(serialized)
+        request.inputs[0].witness_utxo = CTxOut(100000000, b"\x51\x20" + pubkey)
+        request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit((5).to_bytes(32, "big"))
+        response = self.do_command(self.dev_args + ["signtx", request.serialize()])
+        self.assertEqual(response.get("code"), -9, response)
+        self.assertIn("does not support interactive Taproot anti-exfil", response.get("error", ""))
+        self.assertNotIn("psbt", response)
+
     def test_signtx(self):
         for addrtypes, multisig_types, external, op_return in self.signtx_cases:
             with self.subTest(addrtypes=addrtypes, multisig_types=multisig_types, external=external, op_return=op_return):

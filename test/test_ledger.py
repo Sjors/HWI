@@ -51,6 +51,7 @@ class LedgerEmulator(DeviceEmulator):
         self.supports_xpub_ms_display = False # Legacy does not multisig address display; tests not updated for new app
         self.supports_unsorted_ms = False # Legacy does not support unsorted multisig; tests not updated for new app
         self.supports_taproot = not legacy # Legacy does not support Taproot
+        self.supports_anti_exfil = not legacy
         self.strict_bip48 = True
         self.include_xpubs = True
         self.supports_device_multiple_multisig = True
