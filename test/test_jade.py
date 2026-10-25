@@ -49,7 +49,7 @@ class JadeEmulator(DeviceEmulator):
         self.supports_ms_display = False
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
-        self.supports_taproot = False
+        self.supports_taproot = True
         self.strict_bip48 = False
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
@@ -236,7 +236,8 @@ def jade_test_suite(emulator, bitcoind, interface):
     signtx_cases = [
         (["legacy"], ["legacy"], True, True),
         (["segwit"], ["segwit"], True, True),
-        (["legacy", "segwit"], ["legacy", "segwit"], True, True),
+        (["legacy", "segwit", "tap"], ["legacy", "segwit"], True, True),
+        (["tap"], [], False, False),
     ]
 
     # Generic Device tests

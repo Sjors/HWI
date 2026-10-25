@@ -110,7 +110,8 @@ class JadeClient(HardwareWalletClient):
 
     ADDRTYPES = {AddressType.LEGACY: 'pkh(k)',
                  AddressType.WIT: 'wpkh(k)',
-                 AddressType.SH_WIT: 'sh(wpkh(k))'}
+                 AddressType.SH_WIT: 'sh(wpkh(k))',
+                 AddressType.TAP: 'tr(k)'}
 
     MULTI_ADDRTYPES = {AddressType.LEGACY: 'sh(multi(k))',
                        AddressType.WIT: 'wsh(multi(k))',
@@ -549,11 +550,10 @@ class JadeClient(HardwareWalletClient):
     @jade_exception
     def can_sign_taproot(self) -> bool:
         """
-        Blockstream Jade does not currently support Taproot.
-
-        :returns: False, always
+        Taproot key-path signing is supported from Jade 1.0.34. Require
+        1.0.36, which fixes signing transactions with multiple Taproot inputs.
         """
-        return False
+        return bool(self.fw_version.finalize_version() >= semver.VersionInfo(1, 0, 36))
 
     @jade_exception
     def register_descriptor(self, name: str, descriptor: 'Descriptor') -> RegisteredDescriptor:
