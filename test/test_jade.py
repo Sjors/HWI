@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 import unittest
+from unittest import mock
 
 from test_device import (
     Bitcoind,
@@ -25,10 +26,12 @@ from test_device import (
 )
 from hwilib.devices.jadepy.jade import JadeAPI
 from hwilib import anti_exfil as ae
-from hwilib.commands import get_client
+from hwilib.commands import get_client, signtx
 from hwilib.common import Chain
 from hwilib.key import G, point_mul, point_to_bytes
-from hwilib.psbt import PSBT
+from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
+from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
+from hwilib.errors import HWWError, UnavailableActionError
 
 USE_SIMULATOR = True
 JADE_PATH = 'tcp:127.0.0.1:30121' if USE_SIMULATOR else None # None -> should search and find plugged unit
@@ -232,6 +235,34 @@ class TestJadeGetMultisigAddresses(DeviceTestCase):
         result = self.do_command(self.dev_args + ['displayaddress', descriptor_param])
         self.assertEqual(result['address'], '2NAXBEePa5ebo1zTDrtQ9C21QDkkamwczfQ', result)
 
+class TestJadeAntiExfilCapability(DeviceTestCase):
+    def test_released_firmware_refuses_anti_exfil(self):
+        # A real device capability query, followed by a valid protocol request.
+        # No signing RPC may reach firmware that doesn't advertise support.
+        client = get_client("jade", self.emulator.path, chain=Chain.TEST)
+        try:
+            if client.can_sign_anti_exfil():
+                self.skipTest("Firmware advertises the draft protocol")
+            pubkey = point_mul(G, 3)[0].to_bytes(32, "big")
+            transaction = CTransaction()
+            transaction.nVersion = 2
+            transaction.vin = [CTxIn(COutPoint(1, 0), nSequence=0xfffffffd)]
+            transaction.vout = [CTxOut(90000, b"\x51\x20" + pubkey)]
+            request = PSBT(transaction)
+            request.inputs = [PartiallySignedInput(0)]
+            request.outputs = [PartiallySignedOutput(0)]
+            request.cache_unsigned_tx_pieces()
+            request.inputs[0].witness_utxo = CTxOut(100000, b"\x51\x20" + pubkey)
+            request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit((5).to_bytes(32, "big"))
+            with mock.patch.object(client.jade, "sign_psbt", side_effect=AssertionError("Signing RPC must not be called")):
+                with self.assertRaises(UnavailableActionError):
+                    signtx(client, request.serialize())
+                with self.assertRaises(UnavailableActionError):
+                    client.sign_tx(request)
+        finally:
+            client.close()
+
+
 class TestJadeAntiExfil(DeviceTestCase):
     """Real QEMU firmware signing; ordinary Jade firmware must fail capability checks."""
 
@@ -311,7 +342,7 @@ class TestJadeAntiExfil(DeviceTestCase):
                         del bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkeys[0])]
                     client = get_client("jade", self.emulator.path, chain=Chain.TEST)
                     try:
-                        with self.assertRaises(Exception):
+                        with self.assertRaises(HWWError):
                             client.sign_tx(bad)
                     finally:
                         client.close()
@@ -359,6 +390,7 @@ def jade_test_suite(emulator, bitcoind, interface, anti_exfil=False):
 
     # Generic Device tests
     suite = unittest.TestSuite()
+    suite.addTest(DeviceTestCase.parameterize(TestJadeAntiExfilCapability, bitcoind, emulator=dev_emulator, interface=interface))
     suite.addTest(DeviceTestCase.parameterize(TestJadeDisabledCommands, bitcoind, emulator=dev_emulator, interface=interface))
     suite.addTest(DeviceTestCase.parameterize(TestDeviceConnect, bitcoind, emulator=dev_emulator, interface=interface, detect_type="jade"))
     suite.addTest(DeviceTestCase.parameterize(TestJadeGetXpub, bitcoind, emulator=dev_emulator, interface=interface))
