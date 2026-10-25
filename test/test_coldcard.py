@@ -11,6 +11,8 @@ import time
 import unittest
 
 from hwilib._cli import process_commands
+from hwilib.commands import get_client
+from hwilib.common import Chain
 from hwilib import _bech32 as bech32
 from hwilib.devices.coldcard import _firmware_version_supports_psbt_v2
 from test_device import (
@@ -46,12 +48,13 @@ class TestColdcardFirmware(unittest.TestCase):
 
 
 class ColdcardSimulator(DeviceEmulator):
-    def __init__(self, simulator, is_edge=False):
+    def __init__(self, simulator, is_edge=False, segregate=False):
         try:
             os.unlink("coldcard-emulator.stdout")
         except FileNotFoundError:
             pass
         self.simulator = simulator
+        self.segregate = segregate
         self.coldcard_log = None
         self.coldcard_proc = None
         self.type = "coldcard"
@@ -72,23 +75,44 @@ class ColdcardSimulator(DeviceEmulator):
     def start(self):
         super().start()
         self.coldcard_log = open("coldcard-emulator.stdout", "a")
+        # A protected-only run uses the firmware's private socket and never
+        # probes other emulators via enumerate(). Full suites keep discovery.
+        if self.segregate:
+            readme = os.path.join(os.path.dirname(self.simulator), "work", "VirtDisk", "README.md")
+            if not os.path.exists(readme):
+                with open(readme, "w") as stream:
+                    stream.write("Isolated simulator runtime\n")
         # Start the Coldcard simulator
         self.coldcard_proc = subprocess.Popen(
             [
                 "python3",
                 os.path.basename(self.simulator), "--ms", "--headless"
-            ],
+            ] + (["--segregate"] if self.segregate else []),
             cwd=os.path.dirname(self.simulator),
             stdout=self.coldcard_log,
             preexec_fn=os.setsid
         )
+        if self.segregate:
+            self.path = f"/tmp/ckcc-simulator-{self.coldcard_proc.pid}.sock"
         # Wait for simulator to be up
+        deadline = time.monotonic() + 60
         while True:
+            if time.monotonic() > deadline:
+                self.stop()
+                raise RuntimeError("Coldcard simulator did not become ready")
             # Prevent CI from lingering until timeout:
             if self.coldcard_proc.poll() is not None:
                 raise RuntimeError(f"coldcard simulator failed with exit code {self.coldcard_proc.poll()}")
 
             try:
+                if self.segregate:
+                    client = get_client("coldcard", self.path, chain=Chain.TEST)
+                    try:
+                        if client.get_master_fingerprint().hex() == self.fingerprint:
+                            break
+                    finally:
+                        client.close()
+                    continue
                 enum_res = process_commands(["--emulators", "enumerate"])
                 found = False
                 for dev in enum_res:

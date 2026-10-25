@@ -116,7 +116,7 @@ class ColdcardClient(HardwareWalletClient):
     def __init__(self, path: str, password: Optional[str] = None, expert: bool = False, chain: Chain = Chain.MAIN) -> None:
         super(ColdcardClient, self).__init__(path, password, expert, chain)
         # Simulator hard coded pipe socket
-        if path == CC_SIMULATOR_SOCK:
+        if path == CC_SIMULATOR_SOCK or (path.startswith("/tmp/ckcc-simulator-") and path.endswith(".sock")):
             self.device = ColdcardDevice(sn=path)
         else:
             device = hid.device()
