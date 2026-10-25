@@ -14,6 +14,8 @@ from hwilib.errors import BadArgumentError, DeviceFailureError
 from hwilib.key import G, n, point_mul, point_to_bytes
 from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
+from hwilib.devices.ledger_bitcoin.client import _decode_signpsbt_yielded_value
+from hwilib.devices.ledger_bitcoin.client_base import AntiExfilNonce
 
 
 def signer_nonce(secret, msg, commitment):
@@ -227,6 +229,17 @@ class TestAntiExfil(unittest.TestCase):
         self.assertTrue(ae.host_verify(self.pubkey, msg, signature, self.entropy, nonce))
         flipped = bytes([nonce[0] ^ 1]) + nonce[1:]
         self.assertFalse(ae.host_verify(self.pubkey, msg, signature, self.entropy, flipped))
+
+    def test_ledger_nonce_yield(self):
+        nonce = signer_commit(self.secret, bytes(32), ae.host_commit(self.entropy))
+        encoded = b"\xfe\xfd\xff\xff\xff\x03" + nonce + self.pubkey
+        index, receipt = _decode_signpsbt_yielded_value(encoded)
+        self.assertEqual(index, 3)
+        self.assertIsInstance(receipt, AntiExfilNonce)
+        self.assertEqual(receipt.nonce, nonce)
+        self.assertEqual(receipt.pubkey, self.pubkey)
+        with self.assertRaises(Exception):
+            _decode_signpsbt_yielded_value(encoded[:-1])
 
 
 if __name__ == "__main__":
