@@ -1,6 +1,15 @@
 """Unit tests for Trezor's nonce receipt wire transport."""
 from io import BytesIO
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+import test_anti_exfil as fixtures
+from hwilib import anti_exfil as ae
+from hwilib.common import Chain
+from hwilib.devices.trezor import TrezorClient
+from hwilib.errors import BadArgumentError, DeviceFailureError
+from hwilib.key import KeyOriginInfo
+from hwilib._base58 import get_xpub_fingerprint
 from hwilib.devices.trezorlib import btc, messages, protobuf
 
 
@@ -58,6 +67,41 @@ class TestTrezorAntiExfilTransport(unittest.TestCase):
         self.assertEqual(signatures, [None])
         self.assertEqual(transaction, b"")
         self.assertEqual(nonces, {0: self.nonce})
+
+    def test_direct_driver_checks_signature_proof(self):
+        fixture = fixtures.TestAntiExfil()
+        fixture.setUp()
+        psbt = fixture.round_two_request()
+        xpub = "tpubDCknDegFqAdP4V2AhHhs635DPe8N1aTjfKE9m2UFbdej8zmeNbtqDzK59SxnsYSRSx5uS3AujbwgANUiAk4oHmDNUKoGGkWWUY6c48WgjEx"
+        psbt.inputs[0].tap_internal_key = fixture.pubkey
+        psbt.inputs[0].tap_bip32_paths[fixture.pubkey] = ([], KeyOriginInfo(
+            get_xpub_fingerprint(xpub), [0x80000056, 0x80000001, 0x80000000, 0, 0]))
+        request = ae.requests(psbt)[0]
+        client = TrezorClient.__new__(TrezorClient)
+        client.chain = Chain.TEST
+        client.coin_name = "Testnet"
+        client.client = object()
+        # A malicious firmware can return a valid signature whose nonce ignores
+        # the originally recorded host transcript. The direct library API must
+        # reject this too, without relying on commands.signtx's outer verifier.
+        signature = fixtures.sign(fixture.secret, request.message, (7).to_bytes(32, "big"))
+        self.assertTrue(ae.verify_signature(fixture.pubkey, request.message, signature))
+        with patch.object(client, "_check_unlocked"), patch.object(client, "can_sign_anti_exfil", return_value=True):
+            with patch.object(btc, "get_public_node", return_value=SimpleNamespace(xpub=xpub)):
+                with patch.object(btc, "sign_tx", return_value=([signature], b"")):
+                    with self.assertRaises(DeviceFailureError):
+                        client.sign_tx(psbt)
+        self.assertFalse(psbt.inputs[0].tap_key_sig)
+        # Unowned protected targets must be rejected before the ordinary
+        # external-input fallback can ask the device for an unrelated signature.
+        psbt.inputs[0].tap_bip32_paths.clear()
+        with patch.object(client, "_check_unlocked"), patch.object(client, "can_sign_anti_exfil", return_value=True):
+            with patch.object(client, "_supports_external", return_value=True):
+                with patch.object(btc, "get_public_node", return_value=SimpleNamespace(xpub=xpub)):
+                    with patch.object(btc, "sign_tx", return_value=([signature], b"")) as signer:
+                        with self.assertRaises(BadArgumentError):
+                            client.sign_tx(psbt)
+                        signer.assert_not_called()
 
     def test_invalid_receipts(self):
         for receipt in (
