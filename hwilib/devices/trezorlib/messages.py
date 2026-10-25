@@ -184,6 +184,7 @@ class SafetyCheckLevel(IntEnum):
 
 
 class Capability(IntEnum):
+    BitcoinAntiExfil = 100
     Bitcoin = 1
     Bitcoin_like = 2
     Binance = 3
@@ -712,6 +713,10 @@ class TxInput(protobuf.MessageType):
         17: protobuf.Field("orig_index", "uint32", repeated=False, required=False),
         18: protobuf.Field("decred_staking_spend", "DecredStakingSpendType", repeated=False, required=False),
         19: protobuf.Field("script_pubkey", "bytes", repeated=False, required=False),
+        100: protobuf.Field("anti_exfil_host_commitment", "bytes", repeated=False, required=False),
+        101: protobuf.Field("anti_exfil_signer_nonce", "bytes", repeated=False, required=False),
+        102: protobuf.Field("anti_exfil_host_entropy", "bytes", repeated=False, required=False),
+        103: protobuf.Field("anti_exfil_sighash", "uint32", repeated=False, required=False),
     }
 
     def __init__(
@@ -733,6 +738,10 @@ class TxInput(protobuf.MessageType):
         orig_index: Optional["int"] = None,
         decred_staking_spend: Optional["DecredStakingSpendType"] = None,
         script_pubkey: Optional["bytes"] = None,
+        anti_exfil_host_commitment: Optional["bytes"] = None,
+        anti_exfil_signer_nonce: Optional["bytes"] = None,
+        anti_exfil_host_entropy: Optional["bytes"] = None,
+        anti_exfil_sighash: Optional["int"] = None,
     ) -> None:
         self.address_n = address_n if address_n is not None else []
         self.prev_hash = prev_hash
@@ -750,6 +759,11 @@ class TxInput(protobuf.MessageType):
         self.orig_index = orig_index
         self.decred_staking_spend = decred_staking_spend
         self.script_pubkey = script_pubkey
+
+        self.anti_exfil_host_commitment = anti_exfil_host_commitment
+        self.anti_exfil_signer_nonce = anti_exfil_signer_nonce
+        self.anti_exfil_host_entropy = anti_exfil_host_entropy
+        self.anti_exfil_sighash = anti_exfil_sighash
 
 
 class TxOutput(protobuf.MessageType):
@@ -1082,6 +1096,7 @@ class TxRequestSerializedType(protobuf.MessageType):
         1: protobuf.Field("signature_index", "uint32", repeated=False, required=False),
         2: protobuf.Field("signature", "bytes", repeated=False, required=False),
         3: protobuf.Field("serialized_tx", "bytes", repeated=False, required=False),
+        4: protobuf.Field("anti_exfil_nonce", "bytes", repeated=False, required=False),
     }
 
     def __init__(
@@ -1090,10 +1105,13 @@ class TxRequestSerializedType(protobuf.MessageType):
         signature_index: Optional["int"] = None,
         signature: Optional["bytes"] = None,
         serialized_tx: Optional["bytes"] = None,
+        anti_exfil_nonce: Optional["bytes"] = None,
     ) -> None:
         self.signature_index = signature_index
         self.signature = signature
         self.serialized_tx = serialized_tx
+
+        self.anti_exfil_nonce = anti_exfil_nonce
 
 
 class TransactionType(protobuf.MessageType):
@@ -1168,6 +1186,10 @@ class TxInputType(protobuf.MessageType):
         17: protobuf.Field("orig_index", "uint32", repeated=False, required=False),
         18: protobuf.Field("decred_staking_spend", "DecredStakingSpendType", repeated=False, required=False),
         19: protobuf.Field("script_pubkey", "bytes", repeated=False, required=False),
+        100: protobuf.Field("anti_exfil_host_commitment", "bytes", repeated=False, required=False),
+        101: protobuf.Field("anti_exfil_signer_nonce", "bytes", repeated=False, required=False),
+        102: protobuf.Field("anti_exfil_host_entropy", "bytes", repeated=False, required=False),
+        103: protobuf.Field("anti_exfil_sighash", "uint32", repeated=False, required=False),
     }
 
     def __init__(
@@ -1189,6 +1211,10 @@ class TxInputType(protobuf.MessageType):
         orig_index: Optional["int"] = None,
         decred_staking_spend: Optional["DecredStakingSpendType"] = None,
         script_pubkey: Optional["bytes"] = None,
+        anti_exfil_host_commitment: Optional["bytes"] = None,
+        anti_exfil_signer_nonce: Optional["bytes"] = None,
+        anti_exfil_host_entropy: Optional["bytes"] = None,
+        anti_exfil_sighash: Optional["int"] = None,
     ) -> None:
         self.address_n = address_n if address_n is not None else []
         self.prev_hash = prev_hash
@@ -1206,6 +1232,11 @@ class TxInputType(protobuf.MessageType):
         self.orig_index = orig_index
         self.decred_staking_spend = decred_staking_spend
         self.script_pubkey = script_pubkey
+
+        self.anti_exfil_host_commitment = anti_exfil_host_commitment
+        self.anti_exfil_signer_nonce = anti_exfil_signer_nonce
+        self.anti_exfil_host_entropy = anti_exfil_host_entropy
+        self.anti_exfil_sighash = anti_exfil_sighash
 
 
 class TxOutputBinType(protobuf.MessageType):

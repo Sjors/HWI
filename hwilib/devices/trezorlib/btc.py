@@ -244,6 +244,7 @@ def sign_tx(
     details: Optional[messages.SignTx] = None,
     prev_txes: Optional[Dict[bytes, messages.TransactionType]] = None,
     preauthorized: bool = False,
+    anti_exfil_nonces: Optional[Dict[int, bytes]] = None,
     **kwargs: Any,
 ) -> Tuple[Sequence[Optional[bytes]], bytes]:
     """Sign a Bitcoin-like transaction.
@@ -322,7 +323,19 @@ def sign_tx(
 
             if res.serialized.signature_index is not None:
                 idx = res.serialized.signature_index
+                if not 0 <= idx < len(inputs):
+                    raise ValueError("Invalid signature index")
+                nonce = res.serialized.anti_exfil_nonce
+                if nonce is not None:
+                    if (anti_exfil_nonces is None or idx in anti_exfil_nonces or
+                        inputs[idx].anti_exfil_host_commitment is None or
+                        inputs[idx].anti_exfil_host_entropy is not None or
+                        res.serialized.signature is not None or len(nonce) != 33):
+                        raise ValueError("Unexpected anti-exfil nonce")
+                    anti_exfil_nonces[idx] = nonce
                 sig = res.serialized.signature
+                if sig is not None and inputs[idx].anti_exfil_host_commitment is not None and inputs[idx].anti_exfil_host_entropy is None:
+                    raise ValueError("Anti-exfil commitment round returned a signature")
                 if signatures[idx] is not None:
                     raise ValueError(f"Signature for index {idx} already filled")
                 signatures[idx] = sig
@@ -374,7 +387,11 @@ def sign_tx(
     if not isinstance(res, messages.TxRequest):
         raise exceptions.TrezorException("Unexpected message")
 
-    for i, sig in zip(inputs, signatures):
+    for index, (i, sig) in enumerate(zip(inputs, signatures)):
+        if i.anti_exfil_host_commitment is not None and i.anti_exfil_host_entropy is None:
+            if anti_exfil_nonces is None or index not in anti_exfil_nonces or sig is not None:
+                raise exceptions.TrezorException("Anti-exfil nonce is missing")
+            continue
         if i.script_type != messages.InputScriptType.EXTERNAL and sig is None:
             raise exceptions.TrezorException("Some signatures are missing!")
 
