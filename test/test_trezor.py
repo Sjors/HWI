@@ -522,6 +522,58 @@ class TestTrezorAntiExfil(DeviceTestCase):
                 self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
                 self.assertGreater(self.wrpc.gettransaction(sent)["confirmations"], 0)
 
+    def test_two_input_anti_exfil(self):
+        descriptors = self.do_command(self.dev_args + ["getkeypool", "--addr-type", "tap", "0", "5"])
+        self.assertTrue(all(item["success"] for item in self.wrpc.importdescriptors(descriptors)))
+        addresses = [self.wrpc.getnewaddress("", "bech32m") for _ in range(2)]
+        txid = self.wpk_rpc.sendmany("", {address: 1 for address in addresses})
+        self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+        coins = [coin for coin in self.wrpc.listunspent() if coin["txid"] == txid]
+        self.assertEqual(len(coins), 2)
+        funded = self.wrpc.walletcreatefundedpsbt(
+            [{"txid": txid, "vout": coin["vout"]} for coin in coins],
+            [{self.wpk_rpc.getnewaddress(): 1.5}], 0, {"add_inputs": False}, True)
+        request = PSBT()
+        request.deserialize(funded["psbt"])
+        pubkeys = [ae.get_utxo(request, i).scriptPubKey[2:] for i in range(2)]
+        entropies = [(10 + i).to_bytes(32, "big") for i in range(2)]
+        for i, psbt_in in enumerate(request.inputs):
+            psbt_in.sighash = i  # DEFAULT and ALL in the same transaction.
+            psbt_in.unknown[ae.key(ae.HOST_COMMITMENT, pubkeys[i])] = ae.host_commit(entropies[i])
+        result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+        self.assertNotIn("error", result, result)
+        self.assertFalse(result["signed"])
+        first = PSBT()
+        first.deserialize(result["psbt"])
+        nonces = []
+        for i, psbt_in in enumerate(first.inputs):
+            self.assertFalse(psbt_in.tap_key_sig)
+            nonces.append(psbt_in.unknown[ae.key(ae.SIGNER_NONCE, pubkeys[i])])
+            psbt_in.unknown[ae.key(ae.HOST_ENTROPY, pubkeys[i])] = entropies[i]
+        self.assertNotEqual(nonces[0], nonces[1])
+        # Mixing valid receipts between inputs must fail inside the firmware.
+        mixed = copy.deepcopy(first)
+        for i in range(2):
+            mixed.inputs[i].unknown[ae.key(ae.SIGNER_NONCE, pubkeys[i])] = nonces[1 - i]
+        client = get_client("trezor", self.emulator.path, chain=Chain.TEST)
+        try:
+            with self.assertRaises(TrezorFailure):
+                client.sign_tx(mixed)
+        finally:
+            client.close()
+        result = self.do_command(self.dev_args + ["signtx", first.serialize()])
+        self.assertNotIn("error", result, result)
+        self.assertTrue(result["signed"])
+        signed = PSBT()
+        signed.deserialize(result["psbt"])
+        for i, psbt_in in enumerate(signed.inputs):
+            self.assertEqual(len(psbt_in.tap_key_sig), 64 + i)
+            self.assertTrue(ae.host_verify(pubkeys[i], ae.signature_hash(request, i, i),
+                                           psbt_in.tap_key_sig[:64], entropies[i], nonces[i]))
+        finalized = self.wrpc.finalizepsbt(signed.serialize())
+        self.assertTrue(finalized["complete"])
+        self.assertTrue(self.wrpc.testmempoolaccept([finalized["hex"]])[0]["allowed"])
+
 
 def trezor_test_suite(emulator, bitcoind, interface, model, anti_exfil=False):
     assert model in TREZOR_MODELS
