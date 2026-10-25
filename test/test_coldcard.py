@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import copy
 import glob
 import os
 import signal
@@ -11,9 +12,12 @@ import time
 import unittest
 
 from hwilib._cli import process_commands
+from hwilib import _bech32 as bech32
+from hwilib import anti_exfil as ae
 from hwilib.commands import get_client
 from hwilib.common import Chain
-from hwilib import _bech32 as bech32
+from hwilib.key import G, point_mul, point_to_bytes
+from hwilib.psbt import PSBT
 from hwilib.devices.coldcard import _firmware_version_supports_psbt_v2
 from test_device import (
     Bitcoind,
@@ -66,6 +70,7 @@ class ColdcardSimulator(DeviceEmulator):
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
         self.supports_taproot = is_edge
+        self.supports_anti_exfil = is_edge
         self.strict_bip48 = False
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
@@ -204,8 +209,99 @@ class TestColdcardEdgeDisplayAddress(DeviceTestCase):
         expected_witness = bech32.decode('bcrt', expected)
         self.assertEqual(displayed_witness, expected_witness)
 
-def coldcard_test_suite(simulator, bitcoind, interface, is_edge=False):
-    dev_emulator = ColdcardSimulator(simulator, is_edge)
+class TestColdcardAntiExfil(DeviceTestCase):
+    """Opt-in tests requiring a Coldcard Edge firmware built with the draft protocol."""
+
+    def setUp(self):
+        super().setUp()
+        self.dev_args[self.dev_args.index("-d") + 1] = self.emulator.path
+        self.setup_wallets()
+
+    def test_taproot_anti_exfil(self):
+        descriptors = self.do_command(self.dev_args + ["getkeypool", "--addr-type", "tap", "0", "5"])
+        self.assertIsInstance(descriptors, list, descriptors)
+        self.assertTrue(all(result["success"] for result in self.wrpc.importdescriptors(descriptors)))
+
+        for hash_type, version in ((None, 0), (0, 2), (1, 0), (1, 2)):
+            with self.subTest(sighash=hash_type, psbt_version=version):
+                address = self.wrpc.getnewaddress("", "bech32m")
+                txid = self.wpk_rpc.sendtoaddress(address, 1)
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                coins = [coin for coin in self.wrpc.listunspent() if coin["txid"] == txid]
+                self.assertEqual(len(coins), 1)
+                funded = self.wrpc.walletcreatefundedpsbt(
+                    [{"txid": txid, "vout": coins[0]["vout"]}],
+                    [{self.wpk_rpc.getnewaddress(): 0.5}], 0,
+                    {"add_inputs": False}, True,
+                )
+                request = PSBT()
+                request.deserialize(funded["psbt"])
+                self.assertEqual(len(request.inputs), 1)
+                request.inputs[0].sighash = hash_type
+                if version == 2:
+                    request.convert_to_v2()
+                pubkey = ae.get_utxo(request, 0).scriptPubKey[2:]
+                entropy = (5 if hash_type is None else 6).to_bytes(32, "big")
+                request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit(entropy)
+                unsigned = request.get_unsigned_tx().serialize_without_witness()
+
+                first_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", first_result, first_result)
+                self.assertFalse(first_result["signed"])
+                first = PSBT()
+                first.deserialize(first_result["psbt"])
+                self.assertFalse(first.inputs[0].tap_key_sig)
+                nonce = first.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)]
+                self.assertEqual(len(nonce), 33)
+                self.assertEqual(first.get_unsigned_tx().serialize_without_witness(), unsigned)
+                # Reconnecting between subprocess calls does not lose the device's commitment.
+                retry_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", retry_result, retry_result)
+                retry = PSBT()
+                retry.deserialize(retry_result["psbt"])
+                self.assertEqual(retry.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)], nonce)
+                first.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkey)] = entropy
+
+                # Bypass HWI preflight here: the firmware itself must reject a wrong
+                # opening and a changed round-1 nonce rather than sign anyway.
+                for bad_entropy, bad_nonce in ((True, False), (False, True)):
+                    bad = copy.deepcopy(first)
+                    if bad_entropy:
+                        bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkey)] = (7).to_bytes(32, "big")
+                    if bad_nonce:
+                        bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)] = point_to_bytes(point_mul(G, 7))
+                    client = get_client("coldcard", self.emulator.path, chain=Chain.TEST)
+                    try:
+                        client.device.check_mitm()
+                        with self.assertRaises(Exception):
+                            client._sign_tx_once(bad)
+                    finally:
+                        client.close()
+
+                signed_result = self.do_command(self.dev_args + ["signtx", first.serialize()])
+                self.assertNotIn("error", signed_result, signed_result)
+                signed = PSBT()
+                signed.deserialize(signed_result["psbt"])
+                self.assertEqual(signed.get_unsigned_tx().serialize_without_witness(), unsigned)
+                signature = signed.inputs[0].tap_key_sig
+                self.assertEqual(len(signature), 64 if hash_type in (None, 0) else 65)
+                self.assertTrue(ae.host_verify(pubkey, ae.signature_hash(request, 0, hash_type or 0), signature[:64], entropy, nonce))
+                finalized = self.wrpc.finalizepsbt(signed.serialize())
+                self.assertTrue(finalized["complete"])
+                self.assertTrue(self.wrpc.testmempoolaccept([finalized["hex"]])[0]["allowed"])
+                sent = self.wrpc.sendrawtransaction(finalized["hex"])
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                self.assertGreater(self.wrpc.gettransaction(sent)["confirmations"], 0)
+
+
+# Ledger specific disabled command tests
+def coldcard_test_suite(simulator, bitcoind, interface, is_edge=False, anti_exfil=False):
+    dev_emulator = ColdcardSimulator(simulator, is_edge, segregate=anti_exfil)
+    if anti_exfil:
+        if not is_edge:
+            raise ValueError("Coldcard anti-exfil tests require Edge firmware")
+        suite = DeviceTestCase.parameterize(TestColdcardAntiExfil, bitcoind, emulator=dev_emulator, interface=interface)
+        return unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite).wasSuccessful()
 
     signtx_cases = [
         (["legacy"], [], False, False),

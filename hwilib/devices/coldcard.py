@@ -16,6 +16,7 @@ from ..descriptor import (
     WSHDescriptor,
 )
 from ..hwwclient import HardwareWalletClient
+from .. import anti_exfil
 from ..errors import (
     ActionCanceledError,
     BadArgumentError,
@@ -285,6 +286,15 @@ class ColdcardClient(HardwareWalletClient):
         """
         self.device.check_mitm()
 
+        if anti_exfil.requests(psbt):
+            if not self.is_edge:
+                raise UnavailableActionError("This device does not support interactive Taproot anti-exfil")
+            if registered_descriptors:
+                raise BadArgumentError("Coldcard anti-exfil currently requires a BIP86 wallet")
+            # One protected round per call. Do not run the policy fallback or
+            # ordinary multi-pass signing after receiving a nonce commitment.
+            return self._sign_tx_once(psbt)
+
         # Get this devices master key fingerprint
         xpub = self.device.send_recv(CCProtocolPacker.get_xpub('m/0\''), timeout=None)
         master_fp = get_xpub_fingerprint(xpub)
@@ -533,6 +543,10 @@ class ColdcardClient(HardwareWalletClient):
         :raises UnavailableActionError: Always, this function is unavailable
         """
         raise UnavailableActionError('The Coldcard does not support toggling passphrase from the host')
+
+    def can_sign_anti_exfil(self) -> bool:
+        # Matching experimental firmware is required; the host checks its proof.
+        return self.is_edge
 
     def can_sign_taproot(self) -> bool:
         """
