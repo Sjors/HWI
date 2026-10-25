@@ -22,6 +22,25 @@ changed transaction, or unsupported device fails instead of returning an
 unprotected result. The presence of these fields is an explicit protection
 request; there is no fallback to ordinary signing.
 
+Successful protected replies from ``hwilib.commands.signtx`` and the CLI are
+private host-local protocol messages. These boundaries validate the raw device
+response, then copy only validated nonce receipts or verified target signatures
+into the original host request. Original caller metadata and the anti-exfil
+transcript are retained; unrelated metadata added, changed or removed by the
+device is not forwarded. This handles device-controlled bytes from native PSBT
+transports such as Jade and Coldcard; it assumes the application and HWI are
+trusted parts of the same host.
+
+The trusted host must retain its original state and verify the device
+contributions. A calling application may delegate these checks to the checked
+``commands.signtx``/CLI boundary. Core additionally performs its own verification;
+Core and HWI remain trusted components of the same host. Before exporting a
+completed PSBT, the host must strip the anti-exfil fields and copy verified
+signatures into its pristine PSBT. Low-level
+``HardwareWalletClient.sign_tx`` and SDK calls expose transport results; direct
+callers must perform ``anti_exfil.requests`` / ``anti_exfil.check_response`` and
+the same original-PSBT reconstruction themselves.
+
 Generate host entropy with a cryptographically secure random generator and
 reject zero or values at or above the secp256k1 group order. Never send the entropy
 before receiving the device nonce. Keep the transcript private and retain the

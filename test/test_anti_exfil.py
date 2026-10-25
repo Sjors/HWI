@@ -12,12 +12,12 @@ import threading
 import traceback
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from hwilib import anti_exfil as ae
 from hwilib.commands import signtx
 from hwilib.errors import ActionCanceledError, BadArgumentError, DeviceBusyError, DeviceConnectionError, DeviceFailureError, UnavailableActionError
-from hwilib.key import G, n, point_mul, point_to_bytes
+from hwilib.key import G, KeyOriginInfo, n, point_mul, point_to_bytes
 from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
 from hwilib.devices.ledger_bitcoin.client import _decode_signpsbt_yielded_value
@@ -56,6 +56,8 @@ def sign(secret, msg, entropy):
 
 
 class ReferenceClient:
+    """Test signer with optional mutation of simulated device-controlled replies."""
+
     def __init__(self, secret, mutate=None):
         self.secret = secret
         self.mutate = mutate
@@ -333,6 +335,163 @@ class TestAntiExfil(unittest.TestCase):
 
                 with self.assertRaisesRegex(DeviceFailureError, "unprotected signature"):
                     signtx(ReferenceClient(self.secret, extra_signature), first.serialize())
+
+    def test_only_validated_round_results_are_returned(self):
+        class InPlaceClient(ReferenceClient):
+            def sign_tx(self, psbt, registrations=None):
+                result = super().sign_tx(psbt, registrations)
+                psbt.__dict__.update(result.__dict__)
+                return psbt
+
+        metadata_key = bytes.fromhex("fc017800")
+        added_key = bytes.fromhex("fc017801")
+        removed_key = bytes.fromhex("fc017802")
+        for version in (0, 2):
+            for hash_type in (None, 1):
+                for client_class in (ReferenceClient, InPlaceClient):
+                    with self.subTest(version=version, sighash=hash_type, client=client_class.__name__):
+                        request, _ = self.multiple_input_request(version)
+                        request.inputs[1].unknown.clear()  # An untargeted input.
+                        request.inputs[1].tap_key_sig = bytes([42]) * 64  # Preserve its existing signature.
+                        request.inputs[0].sighash = hash_type
+                        request.xpub[bytes([2]) * 78] = KeyOriginInfo(bytes([1]) * 4, [1])
+                        for item in request.inputs + request.outputs:
+                            item.tap_internal_key = self.pubkey
+                        for mapping in [request.unknown] + [item.unknown for item in request.inputs + request.outputs]:
+                            mapping[metadata_key] = b"original caller metadata"
+                            mapping[removed_key] = b"retain even if signer removes it"
+
+                        def change_metadata(result):
+                            # Exercise global, target/untargeted input and output
+                            # proprietary maps, as well as recognized fields.
+                            for mapping in [result.unknown] + [item.unknown for item in result.inputs + result.outputs]:
+                                mapping[metadata_key] = b"signer-mutated metadata"
+                                mapping[added_key] = b"signer-added seed leak"
+                                del mapping[removed_key]
+                            result.xpub.clear()
+                            for item in result.inputs + result.outputs:
+                                item.tap_internal_key = bytes([42]) * 32
+
+                        for round_number in (1, 2):
+                            with self.subTest(round=round_number):
+                                expected = ReferenceClient(self.secret).sign_tx(request)
+                                response = signtx(client_class(self.secret, change_metadata), request.serialize())
+                                self.assertEqual(response["psbt"], expected.serialize())
+                                self.assertEqual(response["signed"], round_number == 2)
+                                if round_number == 1:
+                                    request = expected
+                                    request.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, self.pubkey)] = self.entropy
+                                else:
+                                    target = ae.requests(request)[0]
+                                    self.assertTrue(ae.host_verify(
+                                        target.pubkey, target.message, expected.inputs[0].tap_key_sig[:64],
+                                        target.entropy, target.signer_nonce))
+
+    def test_native_device_response_metadata(self):
+        import base64
+        import hashlib
+        from hwilib.common import Chain
+        from hwilib.devices.coldcard import ColdcardClient
+        from hwilib.devices.jade import JadeClient
+
+        # Keep the actual drivers and PSBT decoders: substitute only the bytes
+        # received from a malicious native-PSBT device, within a trusted HWI host.
+        for device in ("jade", "coldcard"):
+            for round_number in (1, 2):
+                for valid_proof in (True, False):
+                    with self.subTest(device=device, round=round_number, valid_proof=valid_proof):
+                        request = copy.deepcopy(self.psbt) if round_number == 1 else self.round_two_request()
+                        metadata_key = bytes.fromhex("fc017800")
+                        added_key = bytes.fromhex("fc017801")
+                        for mapping in [request.unknown, request.inputs[0].unknown, request.outputs[0].unknown]:
+                            mapping[metadata_key] = b"original host metadata"
+                        expected = ReferenceClient(self.secret).sign_tx(request)
+                        response = copy.deepcopy(expected)
+                        for mapping in [response.unknown, response.inputs[0].unknown, response.outputs[0].unknown]:
+                            mapping[metadata_key] = b"device-mutated metadata"
+                            mapping[added_key] = b"device seed leak"
+                        if not valid_proof:
+                            if round_number == 1:
+                                response.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)] = bytes(33)
+                            else:
+                                response.inputs[0].tap_key_sig = sign(self.secret, ae.signature_hash(request, 0, 0), (7).to_bytes(32, "big"))
+                        request_bytes = base64.b64decode(request.serialize())
+                        response_bytes = base64.b64decode(response.serialize())
+                        if device == "jade":
+                            client = JadeClient.__new__(JadeClient)
+                            client.chain = Chain.TEST
+                            client.fw_version = JadeClient.PSBT_SUPPORTED_FW_VERSION
+                            client.taproot_anti_exfil = True
+                            client.jade = Mock()
+                            client.jade.sign_psbt.return_value = response_bytes
+                        else:
+                            client = ColdcardClient.__new__(ColdcardClient)
+                            client._is_edge = True
+                            client.device = Mock(is_simulator=False)
+                            client.device.download_file.return_value = response_bytes
+
+                            def send_recv(command, **kwargs):
+                                if command[:4] == b"upld":
+                                    return int.from_bytes(command[4:8], "little")
+                                if command == b"sha2":
+                                    return hashlib.sha256(request_bytes).digest()
+                                if command[:4] == b"stxn":
+                                    return None
+                                if command == b"stok":
+                                    return len(response_bytes), hashlib.sha256(response_bytes).digest()
+                                raise AssertionError("Unexpected Coldcard transport request")
+
+                            client.device.send_recv.side_effect = send_recv
+                        with redirect_stderr(io.StringIO()), patch("hwilib.devices.coldcard.time.sleep"):
+                            if valid_proof:
+                                result = signtx(client, request.serialize())
+                                self.assertEqual(result["psbt"], expected.serialize())
+                                self.assertEqual(result["signed"], round_number == 2)
+                            else:
+                                with self.assertRaises(DeviceFailureError):
+                                    signtx(client, request.serialize())
+                        if device == "jade":
+                            client.jade.sign_psbt.assert_called_once_with("testnet", request_bytes)
+                        else:
+                            client.device.download_file.assert_called_once_with(
+                                len(response_bytes), hashlib.sha256(response_bytes).digest(), file_number=1)
+
+    def test_raw_response_is_validated_before_copying(self):
+        for round_number in (1, 2):
+            request = self.psbt if round_number == 1 else self.round_two_request()
+
+            def changed_commitment(result):
+                result.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, self.pubkey)] = bytes(32)
+
+            def invalid_nonce(result):
+                result.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)] = bytes(33)
+
+            def outside_input(result):
+                result.outputs[0].unknown[ae.key(ae.HOST_COMMITMENT, self.pubkey)] = bytes(32)
+
+            def invalid_proof(result):
+                # Still an ordinary valid BIP340 signature in round two, but
+                # its nonce is unrelated to the original host contribution.
+                result.inputs[0].tap_key_sig = sign(self.secret, ae.signature_hash(request, 0, 0), (7).to_bytes(32, "big"))
+
+            for mutation in (changed_commitment, invalid_nonce, outside_input, invalid_proof):
+                with self.subTest(round=round_number, mutation=mutation.__name__):
+                    with self.assertRaises(DeviceFailureError):
+                        signtx(ReferenceClient(self.secret, mutation), request.serialize())
+
+    def test_ordinary_signer_metadata_is_returned(self):
+        request = copy.deepcopy(self.psbt)
+        request.inputs[0].unknown.clear()
+
+        def change_metadata(result):
+            for mapping in [result.unknown, result.inputs[0].unknown, result.outputs[0].unknown]:
+                mapping[bytes.fromhex("fc017800")] = b"ordinary signer metadata"
+            result.inputs[0].tap_key_sig = bytes(64)
+
+        expected = ReferenceClient(self.secret, change_metadata).sign_tx(request)
+        response = signtx(ReferenceClient(self.secret, change_metadata), request.serialize())
+        self.assertTrue(response["signed"])
+        self.assertEqual(response["psbt"], expected.serialize())
 
     def test_private_device_diagnostics(self):
         import cbor2

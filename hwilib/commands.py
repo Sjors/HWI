@@ -216,6 +216,16 @@ def signtx(
     with anti_exfil.private_operation(bool(expected)):
         signed_tx = client.sign_tx(tx, registered_descriptors)
     anti_exfil.check_response(original, signed_tx, expected)
+    if expected:
+        # A valid proof does not authenticate unrelated signer metadata. Keep
+        # the host's PSBT and transcript, copying only the checked round result.
+        for index, request in expected.items():
+            if request.entropy is None:
+                nonce_key = anti_exfil.key(anti_exfil.SIGNER_NONCE, request.pubkey)
+                original.inputs[index].unknown[nonce_key] = signed_tx.inputs[index].unknown[nonce_key]
+            else:
+                original.inputs[index].tap_key_sig = signed_tx.inputs[index].tap_key_sig
+        signed_tx = original
     result = signed_tx.serialize()
     signed = result != psbt
     if expected and next(iter(expected.values())).entropy is None:

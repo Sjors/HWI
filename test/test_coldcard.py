@@ -243,6 +243,8 @@ class TestColdcardAntiExfil(DeviceTestCase):
                 pubkey = ae.get_utxo(request, 0).scriptPubKey[2:]
                 entropy = (5 if hash_type is None else 6).to_bytes(32, "big")
                 request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit(entropy)
+                for mapping in [request.unknown] + [item.unknown for item in request.inputs + request.outputs]:
+                    mapping[bytes.fromhex("fc017800")] = b"original caller metadata"
                 unsigned = request.get_unsigned_tx().serialize_without_witness()
 
                 first_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
@@ -250,9 +252,12 @@ class TestColdcardAntiExfil(DeviceTestCase):
                 self.assertFalse(first_result["signed"])
                 first = PSBT()
                 first.deserialize(first_result["psbt"])
+                expected = copy.deepcopy(request)
                 self.assertFalse(first.inputs[0].tap_key_sig)
                 nonce = first.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)]
                 self.assertEqual(len(nonce), 33)
+                expected.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkey)] = nonce
+                self.assertEqual(first.serialize(), expected.serialize())
                 self.assertEqual(first.get_unsigned_tx().serialize_without_witness(), unsigned)
                 # Reconnecting between subprocess calls does not lose the device's commitment.
                 retry_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
@@ -282,6 +287,10 @@ class TestColdcardAntiExfil(DeviceTestCase):
                 self.assertNotIn("error", signed_result, signed_result)
                 signed = PSBT()
                 signed.deserialize(signed_result["psbt"])
+                expected = copy.deepcopy(first)
+                for index, psbt_in in enumerate(signed.inputs):
+                    expected.inputs[index].tap_key_sig = psbt_in.tap_key_sig
+                self.assertEqual(signed.serialize(), expected.serialize())
                 self.assertEqual(signed.get_unsigned_tx().serialize_without_witness(), unsigned)
                 signature = signed.inputs[0].tap_key_sig
                 self.assertEqual(len(signature), 64 if hash_type in (None, 0) else 65)

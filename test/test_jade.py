@@ -300,6 +300,8 @@ class TestJadeAntiExfil(DeviceTestCase):
                     psbt_in.unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit(entropy)
                     pubkeys.append(pubkey)
                     entropies.append(entropy)
+                for mapping in [request.unknown] + [item.unknown for item in request.inputs + request.outputs]:
+                    mapping[bytes.fromhex("fc017800")] = b"original caller metadata"
                 unsigned = request.get_unsigned_tx().serialize_without_witness()
 
                 first_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
@@ -307,12 +309,15 @@ class TestJadeAntiExfil(DeviceTestCase):
                 self.assertFalse(first_result["signed"])
                 first = PSBT()
                 first.deserialize(first_result["psbt"])
+                expected = copy.deepcopy(request)
                 nonces = []
                 for index, pubkey in enumerate(pubkeys):
                     self.assertFalse(first.inputs[index].tap_key_sig)
                     nonce = first.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, pubkey)]
                     self.assertEqual(len(nonce), 33)
                     nonces.append(nonce)
+                    expected.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, pubkey)] = nonce
+                self.assertEqual(first.serialize(), expected.serialize())
                 self.assertEqual(first.get_unsigned_tx().serialize_without_witness(), unsigned)
                 self.assertEqual(first.version, request.version)
                 # Reconnecting cannot change the committed nonce for the same session.
@@ -351,6 +356,10 @@ class TestJadeAntiExfil(DeviceTestCase):
                 self.assertNotIn("error", signed_result, signed_result)
                 signed = PSBT()
                 signed.deserialize(signed_result["psbt"])
+                expected = copy.deepcopy(first)
+                for index, psbt_in in enumerate(signed.inputs):
+                    expected.inputs[index].tap_key_sig = psbt_in.tap_key_sig
+                self.assertEqual(signed.serialize(), expected.serialize())
                 self.assertEqual(signed.get_unsigned_tx().serialize_without_witness(), unsigned)
                 self.assertEqual(signed.version, request.version)
                 for index, pubkey in enumerate(pubkeys):
