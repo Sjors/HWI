@@ -76,6 +76,8 @@ from typing import (
     Callable,
     Optional,
     Set,
+    ParamSpec,
+    TypeVar,
 )
 
 CC_SIMULATOR_SOCK = '/tmp/ckcc-simulator.sock'
@@ -91,9 +93,13 @@ def _firmware_version_supports_psbt_v2(version: str) -> bool:
         return False
 
 
-def coldcard_exception(f: Callable[..., Any]) -> Callable[..., Any]:
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def coldcard_exception(f: Callable[P, R]) -> Callable[P, R]:
     @wraps(f)
-    def func(*args: Any, **kwargs: Any) -> Any:
+    def func(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return f(*args, **kwargs)
         except CCProtoError as e:
@@ -120,7 +126,7 @@ class ColdcardClient(HardwareWalletClient):
         self._is_edge = None
 
     @property
-    def is_edge(self):
+    def is_edge(self) -> bool:
         """
         Cached property, no need to ask device more than once
         :return: bool
@@ -132,7 +138,7 @@ class ColdcardClient(HardwareWalletClient):
                 # silent fail, normal firmware is implied
                 pass
 
-        return self._is_edge
+        return bool(self._is_edge)
 
     def _supports_psbt_v2(self) -> bool:
         if self.device.is_simulator or self.is_edge:
