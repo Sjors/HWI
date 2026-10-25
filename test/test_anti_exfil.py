@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 import copy
+from contextlib import redirect_stderr
 import json
 import io
 import logging
@@ -442,6 +443,97 @@ class TestAntiExfil(unittest.TestCase):
         ordinary.inputs[0].unknown.clear()
         with self.assertRaisesRegex(RuntimeError, "ordinary SDK diagnostic"):
             signtx(ErrorClient(self.secret), ordinary.serialize())
+
+    def test_cli_private_client_lifetime(self):
+        from hwilib import _cli
+
+        request = self.round_two_request()
+        nonce = request.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, self.pubkey)].hex()
+        payload = "PRIVATE_RECONNECT " + nonce + " " + self.entropy.hex()
+        logger = logging.getLogger("hwi.test.anti_exfil.cli")
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        old_handlers, old_level, old_propagate = logger.handlers[:], logger.level, logger.propagate
+        logger.handlers, logger.propagate = [handler], False
+        logger.setLevel(logging.WARNING)
+        try:
+            for selector in ("path", "fingerprint"):
+                for stage in ("success", "initialization", "signing", "close", "unsupported"):
+                    calls = []
+
+                    class Client(ReferenceClient):
+                        def __init__(self, secret):
+                            calls.append("initialization")
+                            logger.error(payload)
+                            if stage == "initialization":
+                                raise RuntimeError(payload)
+                            super().__init__(secret)
+
+                        def can_sign_anti_exfil(self):
+                            return stage != "unsupported"
+
+                        def sign_tx(self, psbt, registrations=None):
+                            logger.error(payload)
+                            if stage == "signing":
+                                raise RuntimeError(payload)
+                            return super().sign_tx(psbt, registrations)
+
+                        def close(self):
+                            calls.append("close")
+                            logger.error(payload)
+                            if stage == "close":
+                                raise RuntimeError(payload)
+
+                    def factory(*args, **kwargs):
+                        return Client(self.secret)
+
+                    args = ["--debug", "-t", "jade"]
+                    args += ["-d", "private-test"] if selector == "path" else ["--fingerprint", "00000001"]
+                    args += ["signtx", request.serialize()]
+                    trace = io.StringIO()
+                    with self.subTest(selector=selector, stage=stage):
+                        with patch("hwilib._cli.get_client", factory), patch("hwilib._cli.find_device", factory), patch("hwilib._cli.logging.basicConfig"), redirect_stderr(trace):
+                            result = _cli.process_commands(args)
+                        if stage == "success":
+                            self.assertNotIn("error", result)
+                            self.assertTrue(result["signed"])
+                        else:
+                            self.assertIn("error", result)
+                            self.assertNotIn("psbt", result)
+                        if stage == "unsupported":
+                            self.assertEqual(result["code"], -9)
+                            self.assertIn("does not support interactive Taproot anti-exfil", result["error"])
+                        if stage != "initialization":
+                            self.assertEqual(calls[-1], "close")
+                        for private in ("PRIVATE_RECONNECT", nonce, self.entropy.hex()):
+                            self.assertNotIn(private, result.get("error", ""))
+                            self.assertNotIn(private, trace.getvalue())
+                            self.assertNotIn(private, output.getvalue())
+                        logger.warning("logging restored")
+                        self.assertIn("logging restored", output.getvalue())
+                        self.assertFalse(logger.filters)
+                        self.assertFalse(handler.filters)
+        finally:
+            logger.handlers, logger.propagate = old_handlers, old_propagate
+            logger.setLevel(old_level)
+
+    def test_cli_ordinary_device_diagnostics(self):
+        from hwilib import _cli
+
+        class Client(ReferenceClient):
+            def sign_tx(self, psbt, registrations=None):
+                raise RuntimeError("ordinary SDK diagnostic")
+
+            def close(self):
+                pass
+
+        ordinary = copy.deepcopy(self.psbt)
+        ordinary.inputs[0].unknown.clear()
+        trace = io.StringIO()
+        with patch("hwilib._cli.get_client", return_value=Client(self.secret)), patch("hwilib._cli.logging.basicConfig"), redirect_stderr(trace):
+            result = _cli.process_commands(["--debug", "-t", "jade", "-d", "private-test", "signtx", ordinary.serialize()])
+        self.assertEqual(result["error"], "ordinary SDK diagnostic")
+        self.assertIn("ordinary SDK diagnostic", trace.getvalue())
 
     def test_ledger_nonce_yield(self):
         nonce = signer_commit(self.secret, bytes(32), ae.host_commit(self.entropy))

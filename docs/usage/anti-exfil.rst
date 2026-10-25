@@ -38,7 +38,11 @@ chained SDK errors containing the nonce transcript.
 Library callers that construct and close clients themselves can include that
 whole lifetime in ``hwilib.anti_exfil.private_operation()``. The ``signtx``
 command guards its device call; a surrounding scope also covers reconnect and
-close diagnostics from a previous signing round.
+close diagnostics from a previous signing round. The CLI automatically covers
+client initialization, signing and close when it recognizes an explicit
+anti-exfil PSBT. Device errors use controlled messages throughout that lifetime,
+including when ``--debug`` is enabled. A cleanup failure returns an error without
+also returning the signing transcript.
 
 The first firmware integration uses the Ledger Bitcoin app with its draft
 anti-exfil extension. Its round-1 nonce is transported with yield tag

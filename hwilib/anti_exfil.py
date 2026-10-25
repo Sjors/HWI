@@ -46,7 +46,7 @@ def _private_error(error: Exception) -> HWWError:
     if isinstance(error, ActionCanceledError):
         return ActionCanceledError("Anti-exfil signing canceled")
     if isinstance(error, UnavailableActionError):
-        return UnavailableActionError("Anti-exfil signing is unavailable")
+        return UnavailableActionError("This device does not support interactive Taproot anti-exfil")
     if isinstance(error, DeviceConnectionError):
         return DeviceConnectionError("Anti-exfil device connection failed")
     if isinstance(error, DeviceBusyError):
