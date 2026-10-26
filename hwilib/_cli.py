@@ -35,7 +35,8 @@ from .errors import (
     UNKNOWN_ERROR,
 )
 from .hwwclient import HardwareWalletClient
-from . import __version__
+from . import __version__, anti_exfil
+from .psbt import PSBT
 
 import argparse
 import getpass
@@ -261,6 +262,30 @@ def get_parser() -> HWIArgumentParser:
 
     return parser
 
+def _protected_signtx(args: argparse.Namespace) -> Dict[str, Any]:
+    """Protect reconnect and cleanup diagnostics as well as the signing call."""
+    result: Dict[str, Any] = {}
+    with handle_errors(result=result, debug=args.debug):
+        with anti_exfil.private_operation():
+            if args.fingerprint or (args.device_type and not args.device_path):
+                client = find_device(args.password, args.device_type, args.fingerprint, args.expert, args.chain, args.allow_emulators)
+                if client is None:
+                    return {"error": "Could not find device with specified fingerprint or type", "code": DEVICE_CONN_ERROR}
+            elif args.device_type and args.device_path:
+                client = get_client(args.device_type, args.device_path, args.password, args.expert, args.chain)
+            else:
+                return {"error": "You must specify a device type or fingerprint for all commands except enumerate", "code": NO_DEVICE_TYPE}
+            if client is None:
+                return {"error": "Unable to communicate with device", "code": UNKNOWN_ERROR}
+            try:
+                response = args.func(args, client)
+            finally:
+                client.close()
+            # Cleanup failures must not return an otherwise complete transcript.
+            result.update(response)
+    return result
+
+
 def process_commands(cli_args: List[str]) -> Any:
     parser = get_parser()
 
@@ -304,6 +329,17 @@ def process_commands(cli_args: List[str]) -> Any:
         with handle_errors(msg="installudevrules failed:", result=result):
             result = args.func(args)
         return result
+
+    if command == "signtx":
+        candidate = PSBT()
+        try:
+            candidate.deserialize(args.psbt)
+        except Exception:
+            # Let the ordinary path retain its existing parser diagnostics.
+            pass
+        else:
+            if anti_exfil.has_fields(candidate):
+                return _protected_signtx(args)
 
     # Auto detect if we are using fingerprint or type to identify device
     if args.fingerprint or (args.device_type and not args.device_path):

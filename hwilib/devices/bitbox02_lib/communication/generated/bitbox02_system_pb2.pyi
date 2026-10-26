@@ -79,7 +79,7 @@ class DeviceInfoResponse(google.protobuf.message.Message):
         firmware_hash: builtins.bytes
         """Hash of the currently active Bluetooth firmware on the device."""
         firmware_version: builtins.str
-        """Firmware version, formated as "major.minor.patch"."""
+        """Firmware version, formated as an unsigned integer "1", "2", etc."""
         enabled: builtins.bool
         """True if Bluetooth is enabled"""
         def __init__(
@@ -98,6 +98,7 @@ class DeviceInfoResponse(google.protobuf.message.Message):
     MONOTONIC_INCREMENTS_REMAINING_FIELD_NUMBER: builtins.int
     SECURECHIP_MODEL_FIELD_NUMBER: builtins.int
     BLUETOOTH_FIELD_NUMBER: builtins.int
+    TAPROOT_ANTI_EXFIL_FIELD_NUMBER: builtins.int
     name: builtins.str
     initialized: builtins.bool
     version: builtins.str
@@ -105,6 +106,7 @@ class DeviceInfoResponse(google.protobuf.message.Message):
     monotonic_increments_remaining: builtins.int
     securechip_model: builtins.str
     """From v9.6.0: "ATECC608A" or "ATECC608B"."""
+    taproot_anti_exfil: builtins.bool
     @property
     def bluetooth(self) -> global___DeviceInfoResponse.Bluetooth:
         """Only present in Bluetooth-enabled devices."""
@@ -119,9 +121,10 @@ class DeviceInfoResponse(google.protobuf.message.Message):
         monotonic_increments_remaining: builtins.int = ...,
         securechip_model: builtins.str = ...,
         bluetooth: global___DeviceInfoResponse.Bluetooth | None = ...,
+        taproot_anti_exfil: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_bluetooth", b"_bluetooth", "bluetooth", b"bluetooth"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_bluetooth", b"_bluetooth", "bluetooth", b"bluetooth", "initialized", b"initialized", "mnemonic_passphrase_enabled", b"mnemonic_passphrase_enabled", "monotonic_increments_remaining", b"monotonic_increments_remaining", "name", b"name", "securechip_model", b"securechip_model", "version", b"version"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_bluetooth", b"_bluetooth", "bluetooth", b"bluetooth", "initialized", b"initialized", "mnemonic_passphrase_enabled", b"mnemonic_passphrase_enabled", "monotonic_increments_remaining", b"monotonic_increments_remaining", "name", b"name", "securechip_model", b"securechip_model", "taproot_anti_exfil", b"taproot_anti_exfil", "version", b"version"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_bluetooth", b"_bluetooth"]) -> typing.Literal["bluetooth"] | None: ...
 
 global___DeviceInfoResponse = DeviceInfoResponse

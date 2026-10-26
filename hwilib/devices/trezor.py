@@ -16,6 +16,7 @@ from typing import (
     Tuple,
     Union,
 )
+from .. import anti_exfil as ae
 from ..descriptor import (
     Descriptor,
     MultisigDescriptor,
@@ -28,6 +29,7 @@ from ..errors import (
     DeviceAlreadyInitError,
     DeviceAlreadyUnlockedError,
     DeviceConnectionError,
+    DeviceFailureError,
     DEVICE_NOT_INITIALIZED,
     DeviceNotReadyError,
     NoPasswordError,
@@ -374,6 +376,13 @@ class TrezorClient(HardwareWalletClient):
         """
         if registered_descriptors:
             raise UnavailableActionError("The Trezor does not support BIP388 policy signing")
+        requested = ae.requests(psbt)
+        if requested and not self.can_sign_anti_exfil():
+            raise UnavailableActionError("Device firmware does not support Taproot anti-exfil")
+        # The device's current transaction flow signs every internal input. Require
+        # all inputs to be targeted so no ordinary signature can escape this flow.
+        if requested and len(requested) != len(psbt.inputs):
+            raise BadArgumentError("Trezor anti-exfil requires targeting every input")
         self._check_unlocked()
 
         # Get this devices master key fingerprint
@@ -507,6 +516,9 @@ class TrezorClient(HardwareWalletClient):
                             our_keys += 1
                             break
 
+                if input_num in requested and (not found or psbt_in.tap_merkle_root):
+                    raise BadArgumentError("Trezor anti-exfil requires an owned BIP86 key-path input")
+
                 # Determine if we need to do more passes to sign everything
                 if our_keys > passes:
                     passes = our_keys
@@ -523,6 +535,13 @@ class TrezorClient(HardwareWalletClient):
                     assert path_last_ours is not None
                     txinputtype.address_n = path_last_ours
                     to_ignore.append(input_num)
+
+                if input_num in requested:
+                    request = requested[input_num]
+                    txinputtype.anti_exfil_host_commitment = request.commitment
+                    txinputtype.anti_exfil_signer_nonce = request.signer_nonce
+                    txinputtype.anti_exfil_host_entropy = request.entropy
+                    txinputtype.anti_exfil_sighash = request.hash_type
 
                 # append to inputs
                 inputs.append(txinputtype)
@@ -629,6 +648,7 @@ class TrezorClient(HardwareWalletClient):
 
             # Sign the transaction
             assert psbt.tx_version is not None
+            nonces: Dict[int, bytes] = {}
             signed_tx = btc.sign_tx(
                 client=self.client,
                 coin_name=self.coin_name,
@@ -638,11 +658,24 @@ class TrezorClient(HardwareWalletClient):
                 version=psbt.tx_version,
                 lock_time=psbt.compute_lock_time(),
                 serialize=False,
+                anti_exfil_nonces=nonces if requested else None,
             )
 
             # Each input has one signature
             for input_num, (psbt_in, sig) in py_enumerate(list(zip(psbt.inputs, signed_tx[0]))):
                 if input_num in to_ignore:
+                    continue
+                if input_num in requested:
+                    request = requested[input_num]
+                    if request.entropy is None:
+                        psbt_in.unknown[ae.key(ae.SIGNER_NONCE, request.pubkey)] = nonces[input_num]
+                    else:
+                        if sig is None:
+                            raise BadArgumentError("Anti-exfil signature missing")
+                        assert request.signer_nonce is not None
+                        if not ae.host_verify(request.pubkey, request.message, sig, request.entropy, request.signer_nonce):
+                            raise DeviceFailureError("Trezor anti-exfil signature proof failed")
+                        psbt_in.tap_key_sig = sig + (b"\x01" if request.hash_type == 1 else b"")
                     continue
                 for pubkey in psbt_in.hd_keypaths.keys():
                     fp = psbt_in.hd_keypaths[pubkey].fingerprint
@@ -843,6 +876,11 @@ class TrezorClient(HardwareWalletClient):
                 print('Use \'sendpin\' to provide the number positions for the PIN as displayed on your device\'s screen', file=sys.stderr)
                 print(PIN_MATRIX_DESCRIPTION, file=sys.stderr)
         return True
+
+    @trezor_exception
+    def can_sign_anti_exfil(self) -> bool:
+        self._prepare_device()
+        return messages.Capability.BitcoinAntiExfil in self.client.features.capabilities
 
     @trezor_exception
     def can_sign_taproot(self) -> bool:

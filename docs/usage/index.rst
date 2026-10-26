@@ -6,4 +6,5 @@ Usage
 
    installation
    cli-usage
+   anti-exfil
    api-usage

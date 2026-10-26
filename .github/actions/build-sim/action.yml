@@ -22,7 +22,7 @@ runs:
           -o Acquire::https::Timeout=30
         )
         timeout 5m sudo apt-get "${apt_options[@]}" update
-        timeout 30m sudo apt-get "${apt_options[@]}" install -y gcc-arm-linux-gnueabihf libsdl2-image-dev libslirp-dev libpcsclite-dev ninja-build libltdl-dev
+        timeout 30m sudo apt-get "${apt_options[@]}" install -y cmake patchelf libpng-dev gcc-12 gcc-13 gcc-arm-linux-gnueabihf libsdl2-image-dev libslirp-dev libpcsclite-dev ninja-build libltdl-dev
         pip install poetry uv
         wget https://github.com/protocolbuffers/protobuf/releases/download/v22.0/protoc-22.0-linux-x86_64.zip
         sudo unzip protoc-22.0-linux-x86_64.zip -d /usr/local

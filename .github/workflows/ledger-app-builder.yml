@@ -11,12 +11,12 @@ jobs:
   build:
     name: Build Bitcoin App
     runs-on: ${{ inputs.runs-on }}
-    # app-bitcoin v2.5.0 targets SDK v26.5.0, provided by builder 5.3.17.
+    # app-bitcoin develop (2.5.1) is validated with SDK v26.5.0 in builder 5.3.17.
     container: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder:5.3.17
     steps:
       - run: |
-          # Pin to v2.5.0
-          git clone --branch 2.5.0 --depth 1 https://github.com/LedgerHQ/app-bitcoin.git
+          # TEMPORARY ANTI-EXFIL: companion fork branch; restore upstream develop after integration.
+          git clone --branch 2026/10/taproot-anti-exfil https://github.com/Sjors/ledger-bitcoin-app.git app-bitcoin
           cd app-bitcoin
           make DEBUG=1 COIN=bitcoin_testnet BOLOS_SDK=$NANOX_SDK
       - uses: actions/upload-artifact@v7

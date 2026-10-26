@@ -26,6 +26,7 @@ from ..descriptor import (
     MultisigDescriptor,
     RegisteredDescriptor,
 )
+from .. import anti_exfil
 from ..hwwclient import HardwareWalletClient
 from ..errors import (
     ActionCanceledError,
@@ -110,7 +111,8 @@ class JadeClient(HardwareWalletClient):
 
     ADDRTYPES = {AddressType.LEGACY: 'pkh(k)',
                  AddressType.WIT: 'wpkh(k)',
-                 AddressType.SH_WIT: 'sh(wpkh(k))'}
+                 AddressType.SH_WIT: 'sh(wpkh(k))',
+                 AddressType.TAP: 'tr(k)'}
 
     MULTI_ADDRTYPES = {AddressType.LEGACY: 'sh(multi(k))',
                        AddressType.WIT: 'wsh(multi(k))',
@@ -139,6 +141,7 @@ class JadeClient(HardwareWalletClient):
 
         verinfo = self.jade.get_version_info()
         self.fw_version = semver.parse_version_info(verinfo['JADE_VERSION'])
+        self.taproot_anti_exfil = verinfo.get('JADE_TAPROOT_ANTI_EXFIL') is True
         uninitialized = verinfo['JADE_STATE'] not in ['READY', 'TEMP']
 
         # Check minimum supported firmware version (ignore candidate/build parts)
@@ -383,6 +386,10 @@ class JadeClient(HardwareWalletClient):
         """
         Sign a transaction with the Blockstream Jade.
         """
+        if any(anti_exfil.is_field(key) for psbt_in in psbt.inputs for key in psbt_in.unknown):
+            if not self.can_sign_anti_exfil():
+                raise UnavailableActionError('Jade firmware does not support Taproot anti-exfil')
+
         # registered_descriptors are intentionally unused because the descriptors were stored by register_descriptor.
         # Old firmware does not have native PSBT handling - use legacy method
         if self.PSBT_SUPPORTED_FW_VERSION > self.fw_version.finalize_version():
@@ -392,7 +399,7 @@ class JadeClient(HardwareWalletClient):
         psbt_b64 = psbt.serialize()
         psbt_bytes = base64.b64decode(psbt_b64.strip())
 
-        # NOTE: sign_psbt() does not use AE signatures, so sticks with default (rfc6979)
+        # Native PSBT handling preserves the draft anti-exfil transcript fields.
         psbt_bytes = self.jade.sign_psbt(self._network(), psbt_bytes)
         psbt_b64 = base64.b64encode(psbt_bytes).decode()
 
@@ -549,11 +556,13 @@ class JadeClient(HardwareWalletClient):
     @jade_exception
     def can_sign_taproot(self) -> bool:
         """
-        Blockstream Jade does not currently support Taproot.
-
-        :returns: False, always
+        Taproot key-path signing is supported from Jade 1.0.34. Require
+        1.0.36, which fixes signing transactions with multiple Taproot inputs.
         """
-        return False
+        return bool(self.fw_version.finalize_version() >= semver.VersionInfo(1, 0, 36))
+
+    def can_sign_anti_exfil(self) -> bool:
+        return self.taproot_anti_exfil
 
     @jade_exception
     def register_descriptor(self, name: str, descriptor: 'Descriptor') -> RegisteredDescriptor:

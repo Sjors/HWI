@@ -5,7 +5,7 @@ from io import BytesIO, BufferedReader
 from .command_builder import BitcoinCommandBuilder, BitcoinInsType
 from ...common import Chain
 from .client_command import ClientCommandInterpreter
-from .client_base import Client, PartialSignature, SignPsbtYieldedObject, TransportClient
+from .client_base import AntiExfilNonce, Client, PartialSignature, SignPsbtYieldedObject, TransportClient
 from .client_legacy import LegacyClient
 from .errors import UnknownDeviceError
 from .exception import DeviceException, NotSupportedError
@@ -51,6 +51,13 @@ def _make_partial_signature(pubkey_augm: bytes, signature: bytes) -> PartialSign
 def _decode_signpsbt_yielded_value(res: bytes) -> Tuple[int, SignPsbtYieldedObject]:
     res_buffer = BytesIO(res)
     input_index_or_tag = read_varint(res_buffer)
+    if input_index_or_tag == 0xfffffffd:
+        input_index = read_varint(res_buffer)
+        nonce = res_buffer.read(33)
+        pubkey = res_buffer.read(32)
+        if len(nonce) != 33 or len(pubkey) != 32 or res_buffer.read():
+            raise UnknownDeviceError("Invalid anti-exfil nonce response")
+        return input_index, AntiExfilNonce(pubkey=pubkey, nonce=nonce)
 
     # values follow an encoding without an explicit tag, where the
     # first element is the input index. All the signature types are implemented

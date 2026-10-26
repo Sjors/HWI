@@ -42,7 +42,7 @@ from .ledger_bitcoin.client import (
     LegacyClient,
     TransportClient,
 )
-from .ledger_bitcoin.client_base import ApduException
+from .ledger_bitcoin.client_base import AntiExfilNonce, ApduException, PartialSignature
 from .ledger_bitcoin.exception import NotSupportedError
 from .ledger_bitcoin.wallet import (
     MultisigWallet,
@@ -70,6 +70,7 @@ from .._script import (
     parse_multisig,
 )
 from ..psbt import PSBT
+from .. import anti_exfil
 import logging
 import re
 
@@ -219,6 +220,8 @@ class LedgerClient(HardwareWalletClient):
             legacy_input_sigs = client.sign_psbt(psbt, wallet, None)
 
             for idx, partial_sig in legacy_input_sigs:
+                if not isinstance(partial_sig, PartialSignature):
+                    raise DeviceFailureError("Legacy Ledger returned an unexpected signing result")
                 psbt_in = psbt.inputs[idx]
                 psbt_in.partial_sigs[partial_sig.pubkey] = partial_sig.signature
             return psbt
@@ -378,7 +381,19 @@ class LedgerClient(HardwareWalletClient):
             input_sigs = self.client.sign_psbt(psbt2, wallet, wallet_hmac)
 
             for idx, yielded in input_sigs:
+                if idx >= len(psbt2.inputs):
+                    raise DeviceFailureError("Ledger returned an invalid input index")
                 psbt_in = psbt2.inputs[idx]
+                if isinstance(yielded, AntiExfilNonce):
+                    if anti_exfil.key(anti_exfil.HOST_COMMITMENT, yielded.pubkey) not in psbt_in.unknown:
+                        raise DeviceFailureError("Ledger returned an unsolicited anti-exfil nonce")
+                    nonce_key = anti_exfil.key(anti_exfil.SIGNER_NONCE, yielded.pubkey)
+                    if nonce_key in psbt_in.unknown and psbt_in.unknown[nonce_key] != yielded.nonce:
+                        raise DeviceFailureError("Ledger changed its anti-exfil nonce")
+                    psbt_in.unknown[nonce_key] = yielded.nonce
+                    continue
+                if not isinstance(yielded, PartialSignature):
+                    raise DeviceFailureError("Ledger returned an unknown signing result")
 
                 utxo = None
                 if psbt_in.witness_utxo:
@@ -401,6 +416,9 @@ class LedgerClient(HardwareWalletClient):
 
         # Extract the sigs from psbt2 and put them into tx
         for sig_in, psbt_in in zip(psbt2.inputs, psbt.inputs):
+            for field_key, value in sig_in.unknown.items():
+                if field_key.startswith(anti_exfil.PREFIX):
+                    psbt_in.unknown[field_key] = value
             psbt_in.partial_sigs.update(sig_in.partial_sigs)
             psbt_in.tap_script_sigs.update(sig_in.tap_script_sigs)
             if len(sig_in.tap_key_sig) != 0 and len(psbt_in.tap_key_sig) == 0:
@@ -595,6 +613,11 @@ class LedgerClient(HardwareWalletClient):
         :raises UnavailableActionError: Always, this function is unavailable
         """
         raise UnavailableActionError('The Ledger Nano S and X do not support toggling passphrase from the host')
+
+    def can_sign_anti_exfil(self) -> bool:
+        # Matching experimental firmware is required. Stock firmware cannot
+        # satisfy the host's nonce and signature checks.
+        return isinstance(self.client, NewClient)
 
     @ledger_exception
     def can_sign_taproot(self) -> bool:

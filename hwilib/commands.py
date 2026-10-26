@@ -18,6 +18,7 @@ Many exceptions are buried within the functions implemented by each device's :cl
 For more information about the exceptions that those can raise, please see the specific client documentation.
 """
 
+import copy
 import importlib
 import logging
 import platform
@@ -56,6 +57,7 @@ from .common import (
 )
 from .hwwclient import HardwareWalletClient
 from .psbt import PSBT
+from . import anti_exfil
 
 from itertools import count
 from typing import (
@@ -204,8 +206,31 @@ def signtx(
         RegisteredDescriptor.deserialize(registration)
         for registration in registrations or []
     }
-    result = client.sign_tx(tx, registered_descriptors).serialize()
-    return {"psbt": result, "signed": result != psbt}
+    expected = anti_exfil.requests(tx)
+    if expected:
+        with anti_exfil.private_operation():
+            supported = client.can_sign_anti_exfil()
+        if not supported:
+            raise UnavailableActionError("This device does not support interactive Taproot anti-exfil")
+    original = copy.deepcopy(tx) if expected else tx
+    with anti_exfil.private_operation(bool(expected)):
+        signed_tx = client.sign_tx(tx, registered_descriptors)
+    anti_exfil.check_response(original, signed_tx, expected)
+    if expected:
+        # A valid proof does not authenticate unrelated signer metadata. Keep
+        # the host's PSBT and transcript, copying only the checked round result.
+        for index, request in expected.items():
+            if request.entropy is None:
+                nonce_key = anti_exfil.key(anti_exfil.SIGNER_NONCE, request.pubkey)
+                original.inputs[index].unknown[nonce_key] = signed_tx.inputs[index].unknown[nonce_key]
+            else:
+                original.inputs[index].tap_key_sig = signed_tx.inputs[index].tap_key_sig
+        signed_tx = original
+    result = signed_tx.serialize()
+    signed = result != psbt
+    if expected and next(iter(expected.values())).entropy is None:
+        signed = False  # A nonce commitment is not a signature.
+    return {"psbt": result, "signed": signed}
 
 def getxpub(client: HardwareWalletClient, path: str, expert: bool = False) -> Dict[str, Any]:
     """

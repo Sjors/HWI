@@ -20,9 +20,13 @@ from hwilib._cli import process_commands
 from hwilib.descriptor import AddChecksum, parse_descriptor, PubkeyProvider, RegisteredDescriptor
 from hwilib.key import ExtendedKey, KeyOriginInfo
 from hwilib.psbt import PSBT
+from hwilib.tx import CTxOut
+from hwilib import anti_exfil as ae
 
 # Class for emulator control
 class DeviceEmulator():
+    supports_anti_exfil = False
+
     def __init__(self):
         self.type = None
         self.path = None
@@ -59,8 +63,9 @@ class DeviceEmulator():
 
 # Class for bitcoind control and RPC
 class Bitcoind():
-    def __init__(self, bitcoind_path):
+    def __init__(self, bitcoind_path, extra_args=None):
         self.bitcoind_path = bitcoind_path
+        self.extra_args = extra_args or []
         self.datadir = tempfile.mkdtemp()
         self.rpc = None
         self.bitcoind_proc = None
@@ -76,7 +81,6 @@ class Bitcoind():
             s.close()
             return port
 
-        self.p2p_port = get_free_port()
         self.rpc_port = get_free_port()
 
         self.bitcoind_proc = subprocess.Popen(
@@ -87,9 +91,9 @@ class Bitcoind():
                 "-noprinttoconsole",
                 "-fallbackfee=0.0002",
                 "-keypool=1",
-                f"-port={self.p2p_port}",
+                "-listen=0",
                 f"-rpcport={self.rpc_port}"
-            ]
+            ] + self.extra_args
         )
 
         atexit.register(self.cleanup)
@@ -608,6 +612,25 @@ class TestSignTx(DeviceTestCase):
         self.wrpc.sendrawtransaction(final_tx)
 
     # Test wrapper to avoid mixed-inputs signing for Ledger
+    def test_anti_exfil_unsupported(self):
+        if self.emulator.supports_anti_exfil:
+            self.skipTest("Interactive signing is exercised by this device's anti-exfil tests")
+        # A well-formed request must be refused by unsupported drivers, even
+        # when they would otherwise ignore proprietary PSBT fields.
+        pubkey = bytes.fromhex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+        serialized = self.wrpc.createpsbt(
+            [{"txid": "00" * 32, "vout": 0}],
+            [{self.wpk_rpc.getnewaddress(): 0.5}],
+        )
+        request = PSBT()
+        request.deserialize(serialized)
+        request.inputs[0].witness_utxo = CTxOut(100000000, b"\x51\x20" + pubkey)
+        request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit((5).to_bytes(32, "big"))
+        response = self.do_command(self.dev_args + ["signtx", request.serialize()])
+        self.assertEqual(response.get("code"), -9, response)
+        self.assertIn("does not support interactive Taproot anti-exfil", response.get("error", ""))
+        self.assertNotIn("psbt", response)
+
     def test_signtx(self):
         for addrtypes, multisig_types, external, op_return in self.signtx_cases:
             with self.subTest(addrtypes=addrtypes, multisig_types=multisig_types, external=external, op_return=op_return):
@@ -901,7 +924,9 @@ class TestRegisterDescriptor(DeviceTestCase):
 
         descriptors = []
         registrations = []
-        for account in range(2):
+        # Account 0 is registered by test_register_descriptor. Some devices
+        # reject registering that same policy again under a different name.
+        for account in (1, 2):
             descriptor, registration = self._register_descriptor(f"HWI_testing_{account}", account)
             descriptors.append(descriptor)
             registrations.append(registration)

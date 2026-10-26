@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import copy
 import os
 import subprocess
 import logging
@@ -9,6 +10,7 @@ import signal
 import sys
 import time
 import unittest
+from unittest import mock
 
 from test_device import (
     Bitcoind,
@@ -23,6 +25,13 @@ from test_device import (
     TestSignTx,
 )
 from hwilib.devices.jadepy.jade import JadeAPI
+from hwilib import anti_exfil as ae
+from hwilib.commands import get_client, signtx
+from hwilib.common import Chain
+from hwilib.key import G, point_mul, point_to_bytes
+from hwilib.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
+from hwilib.tx import COutPoint, CTransaction, CTxIn, CTxOut
+from hwilib.errors import HWWError, UnavailableActionError
 
 USE_SIMULATOR = True
 JADE_PATH = 'tcp:127.0.0.1:30121' if USE_SIMULATOR else None # None -> should search and find plugged unit
@@ -49,7 +58,8 @@ class JadeEmulator(DeviceEmulator):
         self.supports_ms_display = False
         self.supports_xpub_ms_display = False
         self.supports_unsorted_ms = False
-        self.supports_taproot = False
+        self.supports_taproot = True
+        self.supports_anti_exfil = True
         self.strict_bip48 = False
         self.include_xpubs = False
         self.supports_device_multiple_multisig = True
@@ -225,22 +235,171 @@ class TestJadeGetMultisigAddresses(DeviceTestCase):
         result = self.do_command(self.dev_args + ['displayaddress', descriptor_param])
         self.assertEqual(result['address'], '2NAXBEePa5ebo1zTDrtQ9C21QDkkamwczfQ', result)
 
+class TestJadeAntiExfilCapability(DeviceTestCase):
+    def test_released_firmware_refuses_anti_exfil(self):
+        # A real device capability query, followed by a valid protocol request.
+        # No signing RPC may reach firmware that doesn't advertise support.
+        client = get_client("jade", self.emulator.path, chain=Chain.TEST)
+        try:
+            if client.can_sign_anti_exfil():
+                self.skipTest("Firmware advertises the draft protocol")
+            pubkey = point_mul(G, 3)[0].to_bytes(32, "big")
+            transaction = CTransaction()
+            transaction.nVersion = 2
+            transaction.vin = [CTxIn(COutPoint(1, 0), nSequence=0xfffffffd)]
+            transaction.vout = [CTxOut(90000, b"\x51\x20" + pubkey)]
+            request = PSBT(transaction)
+            request.inputs = [PartiallySignedInput(0)]
+            request.outputs = [PartiallySignedOutput(0)]
+            request.cache_unsigned_tx_pieces()
+            request.inputs[0].witness_utxo = CTxOut(100000, b"\x51\x20" + pubkey)
+            request.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit((5).to_bytes(32, "big"))
+            with mock.patch.object(client.jade, "sign_psbt", side_effect=AssertionError("Signing RPC must not be called")):
+                with self.assertRaises(UnavailableActionError):
+                    signtx(client, request.serialize())
+                with self.assertRaises(UnavailableActionError):
+                    client.sign_tx(request)
+        finally:
+            client.close()
+
+
+class TestJadeAntiExfil(DeviceTestCase):
+    """Real QEMU firmware signing; ordinary Jade firmware must fail capability checks."""
+
+    def setUp(self):
+        super().setUp()
+        self.setup_wallets()
+
+    def test_taproot_anti_exfil(self):
+        descriptors = self.do_command(self.dev_args + ["getkeypool", "--addr-type", "tap", "0", "10"])
+        self.assertIsInstance(descriptors, list, descriptors)
+        self.assertTrue(all(result["success"] for result in self.wrpc.importdescriptors(descriptors)))
+
+        for psbt_version, hash_type in ((0, None), (0, 1), (2, None), (2, 1)):
+            with self.subTest(version=psbt_version, sighash=hash_type):
+                addresses = [self.wrpc.getnewaddress("", "bech32m") for _ in range(2)]
+                txid = self.wpk_rpc.sendmany("", {address: 1 for address in addresses})
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                coins = [coin for coin in self.wrpc.listunspent() if coin["txid"] == txid]
+                self.assertEqual(len(coins), 2)
+                funded = self.wrpc.walletcreatefundedpsbt(
+                    [{"txid": txid, "vout": coin["vout"]} for coin in coins],
+                    [{self.wpk_rpc.getnewaddress(): 0.5}], 0,
+                    {"add_inputs": False}, True,
+                )
+                request = PSBT()
+                request.deserialize(funded["psbt"])
+                if psbt_version == 2:
+                    request.convert_to_v2()
+                self.assertEqual(len(request.inputs), 2)
+                pubkeys, entropies = [], []
+                for index, psbt_in in enumerate(request.inputs):
+                    psbt_in.sighash = hash_type
+                    pubkey = ae.get_utxo(request, index).scriptPubKey[2:]
+                    entropy = (5 + index + 2 * (hash_type or 0)).to_bytes(32, "big")
+                    psbt_in.unknown[ae.key(ae.HOST_COMMITMENT, pubkey)] = ae.host_commit(entropy)
+                    pubkeys.append(pubkey)
+                    entropies.append(entropy)
+                for mapping in [request.unknown] + [item.unknown for item in request.inputs + request.outputs]:
+                    mapping[bytes.fromhex("fc017800")] = b"original caller metadata"
+                unsigned = request.get_unsigned_tx().serialize_without_witness()
+
+                first_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", first_result, first_result)
+                self.assertFalse(first_result["signed"])
+                first = PSBT()
+                first.deserialize(first_result["psbt"])
+                expected = copy.deepcopy(request)
+                nonces = []
+                for index, pubkey in enumerate(pubkeys):
+                    self.assertFalse(first.inputs[index].tap_key_sig)
+                    nonce = first.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, pubkey)]
+                    self.assertEqual(len(nonce), 33)
+                    nonces.append(nonce)
+                    expected.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, pubkey)] = nonce
+                self.assertEqual(first.serialize(), expected.serialize())
+                self.assertEqual(first.get_unsigned_tx().serialize_without_witness(), unsigned)
+                self.assertEqual(first.version, request.version)
+                # Reconnecting cannot change the committed nonce for the same session.
+                retry_result = self.do_command(self.dev_args + ["signtx", request.serialize()])
+                self.assertNotIn("error", retry_result, retry_result)
+                retry = PSBT()
+                retry.deserialize(retry_result["psbt"])
+                for index, pubkey in enumerate(pubkeys):
+                    self.assertEqual(retry.inputs[index].unknown[ae.key(ae.SIGNER_NONCE, pubkey)], nonces[index])
+                    first.inputs[index].unknown[ae.key(ae.HOST_ENTROPY, pubkey)] = entropies[index]
+
+                # Bypass commands.signtx preflight: these errors must be caught by
+                # the actual firmware, before any signature is released.
+                for mutation in ("entropy", "nonce", "output-key", "existing-signature", "mixed-round"):
+                    bad = copy.deepcopy(first)
+                    if mutation == "entropy":
+                        bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkeys[0])] = (11).to_bytes(32, "big")
+                    elif mutation == "nonce":
+                        bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkeys[0])] = point_to_bytes(point_mul(G, 7))
+                    elif mutation == "output-key":
+                        value = bad.inputs[0].unknown.pop(ae.key(ae.HOST_COMMITMENT, pubkeys[0]))
+                        bad.inputs[0].unknown[ae.key(ae.HOST_COMMITMENT, point_mul(G, 7)[0].to_bytes(32, "big"))] = value
+                    elif mutation == "existing-signature":
+                        bad.inputs[0].tap_key_sig = bytes(64)
+                    else:
+                        del bad.inputs[0].unknown[ae.key(ae.HOST_ENTROPY, pubkeys[0])]
+                        del bad.inputs[0].unknown[ae.key(ae.SIGNER_NONCE, pubkeys[0])]
+                    client = get_client("jade", self.emulator.path, chain=Chain.TEST)
+                    try:
+                        with self.assertRaises(HWWError):
+                            client.sign_tx(bad)
+                    finally:
+                        client.close()
+
+                signed_result = self.do_command(self.dev_args + ["signtx", first.serialize()])
+                self.assertNotIn("error", signed_result, signed_result)
+                signed = PSBT()
+                signed.deserialize(signed_result["psbt"])
+                expected = copy.deepcopy(first)
+                for index, psbt_in in enumerate(signed.inputs):
+                    expected.inputs[index].tap_key_sig = psbt_in.tap_key_sig
+                self.assertEqual(signed.serialize(), expected.serialize())
+                self.assertEqual(signed.get_unsigned_tx().serialize_without_witness(), unsigned)
+                self.assertEqual(signed.version, request.version)
+                for index, pubkey in enumerate(pubkeys):
+                    signature = signed.inputs[index].tap_key_sig
+                    self.assertEqual(len(signature), 64 if hash_type is None else 65)
+                    self.assertTrue(ae.host_verify(pubkey, ae.signature_hash(request, index, hash_type or 0),
+                                                   signature[:64], entropies[index], nonces[index]))
+                # Core v31 finalizes v0; verify v2 preservation before conversion.
+                if psbt_version == 2:
+                    signed.convert_to_v0()
+                finalized = self.wrpc.finalizepsbt(signed.serialize())
+                self.assertTrue(finalized["complete"])
+                self.assertTrue(self.wrpc.testmempoolaccept([finalized["hex"]])[0]["allowed"])
+                sent = self.wrpc.sendrawtransaction(finalized["hex"])
+                self.wpk_rpc.generatetoaddress(1, self.wpk_rpc.getnewaddress())
+                self.assertGreater(self.wrpc.gettransaction(sent)["confirmations"], 0)
+
+
 class TestJadeSignTx(TestSignTx):
     # disable big psbt as jade simulator can't handle it
     def test_big_tx(self):
         pass
 
-def jade_test_suite(emulator, bitcoind, interface):
+def jade_test_suite(emulator, bitcoind, interface, anti_exfil=False):
     dev_emulator = JadeEmulator(emulator)
 
     signtx_cases = [
         (["legacy"], ["legacy"], True, True),
         (["segwit"], ["segwit"], True, True),
-        (["legacy", "segwit"], ["legacy", "segwit"], True, True),
+        (["legacy", "segwit", "tap"], ["legacy", "segwit"], True, True),
+        (["tap"], [], False, False),
     ]
+
+    if anti_exfil:
+        suite = DeviceTestCase.parameterize(TestJadeAntiExfil, bitcoind, emulator=dev_emulator, interface=interface)
+        return unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite).wasSuccessful()
 
     # Generic Device tests
     suite = unittest.TestSuite()
+    suite.addTest(DeviceTestCase.parameterize(TestJadeAntiExfilCapability, bitcoind, emulator=dev_emulator, interface=interface))
     suite.addTest(DeviceTestCase.parameterize(TestJadeDisabledCommands, bitcoind, emulator=dev_emulator, interface=interface))
     suite.addTest(DeviceTestCase.parameterize(TestDeviceConnect, bitcoind, emulator=dev_emulator, interface=interface, detect_type="jade"))
     suite.addTest(DeviceTestCase.parameterize(TestJadeGetXpub, bitcoind, emulator=dev_emulator, interface=interface))

@@ -16,6 +16,7 @@ from ..descriptor import (
     WSHDescriptor,
 )
 from ..hwwclient import HardwareWalletClient
+from .. import anti_exfil
 from ..errors import (
     ActionCanceledError,
     BadArgumentError,
@@ -76,6 +77,8 @@ from typing import (
     Callable,
     Optional,
     Set,
+    ParamSpec,
+    TypeVar,
 )
 
 CC_SIMULATOR_SOCK = '/tmp/ckcc-simulator.sock'
@@ -91,9 +94,13 @@ def _firmware_version_supports_psbt_v2(version: str) -> bool:
         return False
 
 
-def coldcard_exception(f: Callable[..., Any]) -> Callable[..., Any]:
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def coldcard_exception(f: Callable[P, R]) -> Callable[P, R]:
     @wraps(f)
-    def func(*args: Any, **kwargs: Any) -> Any:
+    def func(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return f(*args, **kwargs)
         except CCProtoError as e:
@@ -110,7 +117,7 @@ class ColdcardClient(HardwareWalletClient):
     def __init__(self, path: str, password: Optional[str] = None, expert: bool = False, chain: Chain = Chain.MAIN) -> None:
         super(ColdcardClient, self).__init__(path, password, expert, chain)
         # Simulator hard coded pipe socket
-        if path == CC_SIMULATOR_SOCK:
+        if path == CC_SIMULATOR_SOCK or (path.startswith("/tmp/ckcc-simulator-") and path.endswith(".sock")):
             self.device = ColdcardDevice(sn=path)
         else:
             device = hid.device()
@@ -120,7 +127,7 @@ class ColdcardClient(HardwareWalletClient):
         self._is_edge = None
 
     @property
-    def is_edge(self):
+    def is_edge(self) -> bool:
         """
         Cached property, no need to ask device more than once
         :return: bool
@@ -132,7 +139,7 @@ class ColdcardClient(HardwareWalletClient):
                 # silent fail, normal firmware is implied
                 pass
 
-        return self._is_edge
+        return bool(self._is_edge)
 
     def _supports_psbt_v2(self) -> bool:
         if self.device.is_simulator or self.is_edge:
@@ -278,6 +285,15 @@ class ColdcardClient(HardwareWalletClient):
         - Multisigs must use BIP 67. This can be accomplished in Bitcoin Core using the `sortedmulti()` descriptor, available in Bitcoin Core 0.20.
         """
         self.device.check_mitm()
+
+        if anti_exfil.requests(psbt):
+            if not self.is_edge:
+                raise UnavailableActionError("This device does not support interactive Taproot anti-exfil")
+            if registered_descriptors:
+                raise BadArgumentError("Coldcard anti-exfil currently requires a BIP86 wallet")
+            # One protected round per call. Do not run the policy fallback or
+            # ordinary multi-pass signing after receiving a nonce commitment.
+            return self._sign_tx_once(psbt)
 
         # Get this devices master key fingerprint
         xpub = self.device.send_recv(CCProtocolPacker.get_xpub('m/0\''), timeout=None)
@@ -527,6 +543,10 @@ class ColdcardClient(HardwareWalletClient):
         :raises UnavailableActionError: Always, this function is unavailable
         """
         raise UnavailableActionError('The Coldcard does not support toggling passphrase from the host')
+
+    def can_sign_anti_exfil(self) -> bool:
+        # Matching experimental firmware is required; the host checks its proof.
+        return self.is_edge
 
     def can_sign_taproot(self) -> bool:
         """

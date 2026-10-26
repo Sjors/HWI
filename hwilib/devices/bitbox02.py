@@ -18,6 +18,7 @@ from typing import (
     TypeVar,
 )
 import base64
+import semver
 import builtins
 import sys
 import socket
@@ -29,6 +30,7 @@ from ..descriptor import (
     MultisigDescriptor,
     RegisteredDescriptor,
 )
+from .. import anti_exfil
 from ..hwwclient import HardwareWalletClient
 from ..key import ExtendedKey
 from .._script import (
@@ -609,6 +611,14 @@ class Bitbox02Client(HardwareWalletClient):
 
         Transactions with legacy inputs are not supported.
         """
+        ae_requests = anti_exfil.requests(psbt)
+        if ae_requests and registered_descriptors:
+            raise UnavailableActionError("BitBox02 anti-exfil currently requires BIP86 inputs")
+        if ae_requests and len(ae_requests) != len(psbt.inputs):
+            raise BadArgumentError("BitBox02 anti-exfil requires requests for every input")
+        if ae_requests and not self.can_sign_anti_exfil():
+            raise UnavailableActionError("BitBox02 firmware does not support Taproot anti-exfil")
+
         policy_script_config: Optional[bitbox02.btc.BTCScriptConfigWithKeypath] = None
         if registered_descriptors:
             if len(registered_descriptors) > 1:
@@ -918,6 +928,15 @@ class Bitbox02Client(HardwareWalletClient):
             )
 
         assert psbt.tx_version is not None
+        ae_transport = {
+            index: bitbox02.btc.BTCTaprootAntiExfil(
+                host_commitment=request.commitment,
+                signer_nonce=request.signer_nonce or b"",
+                host_entropy=request.entropy or b"",
+                sighash=request.hash_type,
+            ) for index, request in ae_requests.items()
+        }
+        ae_nonces: Dict[int, bytes] = {}
         sigs = self.init().btc_sign(
             self._get_coin(),
             script_configs,
@@ -925,7 +944,13 @@ class Bitbox02Client(HardwareWalletClient):
             outputs=outputs,
             locktime=psbt.compute_lock_time(),
             version=psbt.tx_version,
+            taproot_anti_exfil=ae_transport,
+            anti_exfil_nonces=ae_nonces,
         )
+
+        for index, nonce in ae_nonces.items():
+            request = ae_requests[index]
+            psbt.inputs[index].unknown[anti_exfil.key(anti_exfil.SIGNER_NONCE, request.pubkey)] = nonce
 
         for (_, sig), pubkey, psbt_in in zip(sigs, found_pubkeys, psbt.inputs):
             r, s = sig[:32], sig[32:64]
@@ -1027,11 +1052,12 @@ class Bitbox02Client(HardwareWalletClient):
 
     def can_sign_taproot(self) -> bool:
         """
-        The BitBox02 does not support Taproot yet.
-
-        :returns: False, always
+        Taproot key-path signing is available in the supported firmware.
         """
-        return False
+        return self.init().version >= semver.VersionInfo(9, 24, 0)
+
+    def can_sign_anti_exfil(self) -> bool:
+        return self.init().device_info().get("taproot_anti_exfil") is True
 
     def _bip388_script_config(self, descriptor: Descriptor) -> bitbox02.btc.BTCScriptConfig:
         desc_keys = []

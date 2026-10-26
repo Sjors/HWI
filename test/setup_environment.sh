@@ -68,37 +68,43 @@ set -ex
 mkdir -p work
 cd work
 
+# TEMPORARY ANTI-EXFIL: integration branches in Sjors's forks.
+# Remove this block and restore upstream versions when the companion PRs land.
+# Branch refs deliberately follow signing-only SHA changes before publication.
+ANTI_EXFIL_REF="2026/10/taproot-anti-exfil"
+TREZOR_REPOSITORY="https://github.com/Sjors/trezor-firmware.git"
+JADE_REPOSITORY="https://github.com/Sjors/Jade.git"
+BITBOX02_REPOSITORY="https://github.com/Sjors/bitbox02-firmware.git"
+COLDCARD_EDGE_REPOSITORY="https://github.com/Sjors/firmware.git"
+BITCOIN_REPOSITORY="https://github.com/Sjors/bitcoin.git"
+
 # Pinned firmware versions
-TREZOR_VERSION="core/v2.9.6"
+TREZOR_VERSION="${ANTI_EXFIL_REF}"
 BITBOX01_VERSION="v7.1.0"
-BITBOX02_VERSION="firmware/v9.24.0"
+BITBOX02_VERSION="${ANTI_EXFIL_REF}"
 KEEPKEY_VERSION="v7.10.0"
 SPECULOS_VERSION="ed952a54801f59a71399462b5422976d84c817bb"  # Requires Python >=3.10 (v0.25.11+)
-JADE_VERSION="1.0.36"
+JADE_VERSION="${ANTI_EXFIL_REF}"
 
 COLDCARD_VERSION="2026-07-31T0519-v5.6.0"
-COLDCARD_EDGE_VERSION="2026-07-31T1609-v6.6.0X"
+COLDCARD_EDGE_VERSION="${ANTI_EXFIL_REF}"
 
 if [[ -n ${build_trezor_1} || -n ${build_trezor_t} ]]; then
+    # TEMPORARY ANTI-EXFIL: build portable SDL3 libraries for current main.
+    source ../setup_trezor_sdl3.sh
+    build_trezor_sdl3
+
     # Clone trezor-firmware if it doesn't exist, or update it if it does
     if [ ! -d "trezor-firmware" ]; then
-        git clone --recursive --depth 1 --shallow-submodules --branch ${TREZOR_VERSION} https://github.com/trezor/trezor-firmware.git
+        git clone --recursive --shallow-submodules --branch ${TREZOR_VERSION} "${TREZOR_REPOSITORY}"
         cd trezor-firmware
     else
         cd trezor-firmware
-        git fetch
-
-        # Determine if we need to pull. From https://stackoverflow.com/a/3278427
-        UPSTREAM=${1:-'@{u}'}
-        LOCAL=$(git rev-parse @)
-        REMOTE=$(git rev-parse "$UPSTREAM")
-        BASE=$(git merge-base @ "$UPSTREAM")
-
-        if [ $LOCAL = $REMOTE ]; then
-            echo "Up-to-date"
-        elif [ $LOCAL = $BASE ]; then
-            git pull
-        fi
+        git remote set-url origin "${TREZOR_REPOSITORY}"
+        git fetch --no-recurse-submodules origin "${TREZOR_VERSION}"
+        git checkout --detach FETCH_HEAD
+        git submodule sync --recursive
+        git submodule update --init --recursive
     fi
 
     # Remove .venv so that poetry can symlink everything correctly
@@ -107,33 +113,29 @@ if [[ -n ${build_trezor_1} || -n ${build_trezor_t} ]]; then
     if [[ -n ${build_trezor_1} ]]; then
         # Build trezor one emulator. This is pretty fast, so rebuilding every time is ok
         # But there should be some caching that makes this faster
-        uv sync
+        uv sync --locked
         cd legacy
         export EMULATOR=1 TREZOR_TRANSPORT_V1=1 DEBUG_LINK=1 HEADLESS=1
         export CC=gcc-12
         uv run script/setup
         uv run script/cibuild
+        bundle_trezor_sdl3 firmware/trezor.elf libSDL3.so.0
         # Delete any emulator.img file
         find . -name "emulator.img" -exec rm {} \;
         cd ..
     fi
 
     if [[ -n ${build_trezor_t} ]]; then
-        # Pin the Rust nightly to the one trezor-firmware ${TREZOR_VERSION} expects
-        # (see its shell.nix: rust-bin.nightly."2025-04-15"). The rolling "nightly"
-        # channel has drifted and newer nightlies reject the firmware's
-        # reexport_test_harness_main attribute with error E0658.
-        TREZOR_RUST_NIGHTLY="nightly-2025-04-15"
-        rustup toolchain install ${TREZOR_RUST_NIGHTLY}
-        rustup default ${TREZOR_RUST_NIGHTLY}
-        rustup component add rustfmt --toolchain ${TREZOR_RUST_NIGHTLY}
-        rustup component add rust-src --toolchain ${TREZOR_RUST_NIGHTLY}-x86_64-unknown-linux-gnu
-        # Build trezor t emulator. This is pretty fast, so rebuilding every time is ok
-        # But there should be some caching that makes this faster
-        git am ../../data/trezor-t-build.patch
-        uv sync
+        # Current main pins this in flake.nix; keep the host default unchanged.
+        TREZOR_RUST_NIGHTLY="nightly-2026-03-16"
+        rustup toolchain install "${TREZOR_RUST_NIGHTLY}" --profile minimal --component rustfmt --component rust-src
+        uv sync --locked
         cd core
-        uv run make build_unix
+        RUSTUP_TOOLCHAIN="${TREZOR_RUST_NIGHTLY}" uv run make build_unix TREZOR_MODEL=T2T1 PYOPT=0
+        # Preserve the path used by HWI and emu.sh despite the xtask output move.
+        mkdir -p build/unix
+        cp build/artifacts/latest/firmware-emu build/unix/trezor-emu-core
+        bundle_trezor_sdl3 build/unix/trezor-emu-core libSDL3.so.0 libSDL3_image.so.0
         # Delete any emulator.img file
         find . -name "trezor.flash" -exec rm {} \;
         cd ..
@@ -147,19 +149,26 @@ if [[ -n ${build_coldcard} || -n ${build_coldcard_edge} ]]; then
         local coldcard_dir="$2"
         local coldcard_requirements="$3"
         local coldcard_multisig_patch="$4"
+        local coldcard_repository="${5:-https://github.com/Coldcard/firmware.git}"
+        local coldcard_mpy_patch="${PWD}/../data/coldcard-ubuntu24-mpy.patch"
+        # TEMPORARY ANTI-EXFIL: match the validated MicroPython compiler.
+        local CC=gcc-13
+        export CC
 
         # Clone coldcard firmware if it doesn't exist, or update it if it does
         coldcard_setup_needed=false
         if [ ! -d "${coldcard_dir}" ]; then
-            git clone --depth 1 --branch "${coldcard_version}" https://github.com/Coldcard/firmware.git "${coldcard_dir}"
+            git clone --branch "${coldcard_version}" "${coldcard_repository}" "${coldcard_dir}"
             cd "${coldcard_dir}"
             # Simulator setup initializes the required nested dependencies.
             git submodule update --init
             coldcard_setup_needed=true
         else
             cd "${coldcard_dir}"
-            git fetch --tags origin
-            git checkout --force "${coldcard_version}"
+            git remote set-url origin "${coldcard_repository}"
+            git fetch --tags origin "${coldcard_version}"
+            git checkout --force FETCH_HEAD
+            git submodule sync --recursive
             git submodule update --init --force
             coldcard_setup_needed=true
         fi
@@ -174,7 +183,11 @@ if [[ -n ${build_coldcard} || -n ${build_coldcard_edge} ]]; then
         if [ "$coldcard_setup_needed" == true ] ; then
             pushd ../external/micropython
             # Do not treat new warnings from Ubuntu 24.04's compiler as errors.
-            git apply ../../ubuntu24_mpy.patch
+            if [ -f ../../ubuntu24_mpy.patch ]; then
+                git apply ../../ubuntu24_mpy.patch
+            else
+                git apply "${coldcard_mpy_patch}"
+            fi
             popd
             pushd ../external/micropython/mpy-cross/
             make
@@ -194,7 +207,7 @@ if [[ -n ${build_coldcard} || -n ${build_coldcard_edge} ]]; then
         do_coldcard_firmware "${COLDCARD_VERSION}" firmware requirements.txt coldcard-multisig.patch
     fi
     if [[ -n ${build_coldcard_edge} ]]; then
-        do_coldcard_firmware "${COLDCARD_EDGE_VERSION}" firmware unix/requirements.txt coldcard-edge-multisig.patch
+        do_coldcard_firmware "${COLDCARD_EDGE_VERSION}" firmware unix/requirements.txt coldcard-edge-multisig.patch "${COLDCARD_EDGE_REPOSITORY}"
     fi
 fi
 
@@ -322,25 +335,18 @@ if [[ -n ${build_jade} ]]; then
 
     # Clone Blockstream Jade firmware if it doesn't exist, or update it if it does
     if [ ! -d "jade" ]; then
-        git clone --recursive --branch ${JADE_VERSION} https://github.com/Blockstream/Jade.git ./jade
+        git clone --recursive --branch ${JADE_VERSION} "${JADE_REPOSITORY}" ./jade
         cd jade
     else
         cd jade
-        git fetch --tags --recurse-submodules
-
-        # Determine if we need to pull. From https://stackoverflow.com/a/3278427
-        UPSTREAM=${1:-'@{u}'}
-        LOCAL=$(git rev-parse @)
-        REMOTE=$(git rev-parse "$UPSTREAM")
-        BASE=$(git merge-base @ "$UPSTREAM")
-
-        if [ $LOCAL = $REMOTE ]; then
-            echo "Jade master up-to-date"
-        elif [ $LOCAL = $BASE ]; then
-            git pull
-        fi
-        git submodule update --recursive --init
+        git remote set-url origin "${JADE_REPOSITORY}"
+        git fetch origin "${JADE_VERSION}"
+        git checkout --detach FETCH_HEAD
+        git submodule update --init --recursive
     fi
+
+    # TEMPORARY ANTI-EXFIL: ESP-IDF needs upstream tags for a SemVer version.
+    git fetch --tags https://github.com/Blockstream/Jade.git
 
     # Deduce the relevant version of esp-idf to use
     ESP_IDF_BRANCH=$(grep "ARG ESP_IDF_BRANCH=" Dockerfile | cut -d\= -f2)
@@ -424,24 +430,18 @@ fi
 if [[ -n ${build_bitbox02} ]]; then
     # Clone digital bitbox02 firmware if it doesn't exist, or update it if it does
     if [ ! -d "bitbox02-firmware" ]; then
-        git clone --recursive --branch ${BITBOX02_VERSION} https://github.com/BitBoxSwiss/bitbox02-firmware.git
+        git clone --recursive --branch ${BITBOX02_VERSION} "${BITBOX02_REPOSITORY}"
         cd bitbox02-firmware
     else
         cd bitbox02-firmware
-        git fetch
-
-        # Determine if we need to pull. From https://stackoverflow.com/a/3278427
-        UPSTREAM=${1:-'@{u}'}
-        LOCAL=$(git rev-parse @)
-        REMOTE=$(git rev-parse "$UPSTREAM")
-        BASE=$(git merge-base @ "$UPSTREAM")
-
-        if [ $LOCAL = $REMOTE ]; then
-            echo "Up-to-date"
-        elif [ $LOCAL = $BASE ]; then
-            git pull
-        fi
+        git remote set-url origin "${BITBOX02_REPOSITORY}"
+        git fetch origin "${BITBOX02_VERSION}"
+        git checkout --detach FETCH_HEAD
+        git submodule update --init --recursive
     fi
+
+    # TEMPORARY ANTI-EXFIL: version generation needs upstream signed release tags.
+    git fetch --tags https://github.com/BitBoxSwiss/bitbox02-firmware.git
 
     # Build the simulator. This is cached, but it is also fast
     CONTAINER_VERSION=$(cat .containerversion)
@@ -452,29 +452,15 @@ if [[ -n ${build_bitbox02} ]]; then
 fi
 
 if [[ -n ${build_bitcoind} ]]; then
-    # Clone bitcoind if it doesn't exist, or update it if it does
-    bitcoind_setup_needed=false
+    # TEMPORARY ANTI-EXFIL: Core's two-round host is needed by integration tests.
     if [ ! -d "bitcoin" ]; then
-        git clone https://github.com/bitcoin/bitcoin.git
+        git clone --single-branch --branch "${ANTI_EXFIL_REF}" "${BITCOIN_REPOSITORY}" bitcoin
         cd bitcoin
-        bitcoind_setup_needed=true
     else
         cd bitcoin
-        git reset --hard origin/master
-        git fetch
-
-        # Determine if we need to pull. From https://stackoverflow.com/a/3278427
-        UPSTREAM=${1:-'@{u}'}
-        LOCAL=$(git rev-parse @)
-        REMOTE=$(git rev-parse "$UPSTREAM")
-        BASE=$(git merge-base @ "$UPSTREAM")
-
-        if [ $LOCAL = $REMOTE ]; then
-            echo "Up-to-date"
-        elif [ $LOCAL = $BASE ]; then
-            git pull
-            bitcoind_setup_needed=true
-        fi
+        git remote set-url origin "${BITCOIN_REPOSITORY}"
+        git fetch origin "${ANTI_EXFIL_REF}"
+        git checkout --detach FETCH_HEAD
     fi
 
     # Build bitcoind. This is super slow, but it is cached so it runs fairly quickly.

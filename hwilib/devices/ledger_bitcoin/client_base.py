@@ -65,7 +65,14 @@ class PartialSignature:
     tapleaf_hash: Optional[bytes] = None
 
 
-SignPsbtYieldedObject = Union[PartialSignature]
+@dataclass(frozen=True)
+class AntiExfilNonce:
+    """Original public nonce returned before the host entropy is revealed."""
+    pubkey: bytes
+    nonce: bytes
+
+
+SignPsbtYieldedObject = Union[PartialSignature, AntiExfilNonce]
 
 class Client:
     def __init__(self, transport_client: TransportClient, chain: Chain = Chain.MAIN) -> None:
